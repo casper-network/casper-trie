@@ -7,7 +7,7 @@ const VERSION: u8 = 0;
 /// A wire-format for a Merkle Patricia trie. This is a new-type around raw bytes. The raw bytes
 /// have two components.
 ///
-/// Two components are:
+/// The two components are:
 /// 1. An *envelope*
 /// 2. A *value* or list of cryptographic hashes representing branches.
 ///
@@ -19,7 +19,7 @@ const VERSION: u8 = 0;
 ///
 /// Byte 2: Key or affix length.
 ///
-/// Bytes [3 to at most 256+3]: The key or affix. These bytes are for a key if the highest three
+/// Bytes 3 to at most 256+3: The key or affix. These bytes are for a key if the highest three
 /// bits in byte 1 were LEAF_TAG (ie, 0). Otherwise it is an affix, because the trie is a node with
 /// branches.
 ///   - Having a keyspace that supports keys 256 bytes in length is helpful for variable length
@@ -36,29 +36,28 @@ const VERSION: u8 = 0;
 ///
 /// Nodes cannot have 0 branches or just 1 branch.
 
-// Note: since we only reserve 3 bits for tag codes, there can only be at most 8 of them.
-pub(crate) const LEAF_TAG: u8 = 0;
-pub(crate) const NODE31_TAG: u8 = 1;
-pub(crate) const NODE256_TAG: u8 = 2;
-
-pub struct WireTrieRef<'a>(&'a [u8]);
-
-#[derive(thiserror::Error, Debug)]
-pub(crate) enum TrieReadError {
-    #[error("Invalid trie tag code: {0}")]
-    InvalidTrieTagCode(u8),
-
-    #[error(transparent)]
-    TryFromSliceError(#[from] std::array::TryFromSliceError),
+#[derive(PartialEq, Eq)]
+#[repr(u8)]
+pub enum Tag {
+    Leaf = 0,
+    Node31 = 1,
+    Node256 = 2,
+    Unknown = 255,
 }
 
-#[derive(Debug)]
-// TODO: Don't be pub (crate)
-pub struct WireTrieLeafRef<'a>(pub(crate) &'a [u8]);
+pub struct Trie<'a>(&'a [u8]);
 
-impl<'a> WireTrieLeafRef<'a> {
-    pub(crate) fn new(raw_bytes: &[u8]) -> WireTrieLeafRef {
-        WireTrieLeafRef(raw_bytes)
+pub type TrieReadError = std::array::TryFromSliceError;
+
+#[derive(Debug, Clone)]
+// TODO: Don't be pub (crate)
+pub struct Leaf<'a>(pub(crate) &'a [u8]);
+
+impl<'a> Leaf<'a> {
+    pub(crate) fn new(wire_trie_ref: Trie) -> Leaf {
+        let Trie(raw_bytes) = wire_trie_ref;
+        // Throw away the leading byte and leave only the key length and data
+        Leaf(&raw_bytes[1..])
     }
 
     pub(crate) fn key(&self) -> &[u8] {
@@ -73,31 +72,31 @@ impl<'a> WireTrieLeafRef<'a> {
 }
 
 #[derive(Debug)]
-pub(crate) enum TrieRead<'a> {
-    DigestReadFromNode(&'a Digest),
-    TrieLeaf(WireTrieLeafRef<'a>),
-    NotFound,
+pub(crate) enum TrieLeafOrBranch<'a> {
+    Leaf(Leaf<'a>),
+    Branch(&'a Digest),
+    KeyNotFound,
+    IndexOutOfRange,
 }
 
-pub(crate) struct TrieProof<'a> {
+pub(crate) struct Proof<'a> {
     version_byte_and_envelop_hash: Digest,
     branches_before: &'a [u8],
     branches_after: &'a [u8],
 }
 
 pub(crate) enum TrieReadWithProof<'a> {
-    DigestWithProof {
+    Leaf(Leaf<'a>),
+    BranchWithProof {
         digest: &'a Digest,
-        key_bytes_read: u8,
-        proof: TrieProof<'a>,
+        proof: Proof<'a>,
     },
-    TrieLeaf(WireTrieLeafRef<'a>),
     NotFound,
 }
 
-impl<'a> WireTrieRef<'a> {
-    pub(crate) fn new(trie_bytes: &[u8]) -> WireTrieRef {
-        WireTrieRef(trie_bytes)
+impl<'a> Trie<'a> {
+    pub(crate) fn new(trie_bytes: &[u8]) -> Trie {
+        Trie(trie_bytes)
     }
 
     pub(crate) fn raw_bytes(&self) -> &'a [u8] {
@@ -106,8 +105,13 @@ impl<'a> WireTrieRef<'a> {
 
     /// The tag code for the trie, which are the highest three bits of the first byte.
     /// This means there are 8 possible tags for a trie in total.
-    pub(crate) fn tag(&self) -> u8 {
-        self.0[0] >> 5
+    pub(crate) fn tag(&self) -> Tag {
+        match self.0[0] >> 5 {
+            0 => Tag::Leaf,
+            1 => Tag::Node31,
+            2 => Tag::Node256,
+            _ => Tag::Unknown,
+        }
     }
 
     /// Get the length in bytes of the branch index using the tag.
@@ -117,8 +121,8 @@ impl<'a> WireTrieRef<'a> {
     /// - If the trie is not a node this returns 0 bytes.
     fn search_index_length(&self) -> usize {
         match self.tag() {
-            NODE31_TAG => self.0[0] as usize & 0b11111,
-            NODE256_TAG => 32,
+            Tag::Node31 => self.0[0] as usize & 0b11111,
+            Tag::Node256 => 32,
             _ => 0,
         }
     }
@@ -163,13 +167,14 @@ impl<'a> WireTrieRef<'a> {
     /// Find the branch index for a byte in a trie node.
     /// For radix-31 nodes, use a binary search on the indices.
     /// For radix-256 nodes, use the popcnt instruction
-    fn find_branch_byte(&self, key_byte_to_search_for: &u8) -> Option<usize> {
+    fn find_branch_byte(&self, key_byte_to_search_for: &u8) -> Option<u8> {
         let branch_byte_indices = self.branch_byte_indices();
         // TODO: Use SIMD if branch_byte_indices.len() <= 16 ?
         if branch_byte_indices.len() < 32 {
             return branch_byte_indices
                 .binary_search(key_byte_to_search_for)
-                .ok();
+                .ok()
+                .map(|index| index as u8);
         }
 
         // The 32 bytes in branch_byte_indices are a bit-array representing which bytes are present
@@ -189,18 +194,18 @@ impl<'a> WireTrieRef<'a> {
             return None;
         }
 
-        let mut digest_index: usize = 0;
-        // TODO: unravel these loops / avx popcount
+        let mut digest_index: u8 = 0;
+        // TODO: unravel these loops / avx popcount?
         // https://github.com/WojciechMula/sse-popcount/blob/master/popcnt-avx512-vpopcnt.cpp https://arxiv.org/abs/1611.07612
-        for i in 0..quot - 1 {
+        for i in 0..quot {
             // Convert blocks of 32 bytes into u64s, call popcnt to get how many branches in this
             // bit-array part
             let branch_count_in_bit_array =
                 u64::from_le_bytes(branch_byte_indices[i * 8..i * 8 + 8].try_into().ok()?);
-            digest_index += branch_count_in_bit_array.count_ones() as usize;
+            digest_index += branch_count_in_bit_array.count_ones() as u8;
         }
 
-        digest_index += (highest_bits & !(!0u64 << rem.saturating_sub(1))).count_ones() as usize;
+        digest_index += (highest_bits & !(!0u64 << rem.saturating_sub(1))).count_ones() as u8;
         Some(digest_index)
     }
 
@@ -212,16 +217,19 @@ impl<'a> WireTrieRef<'a> {
         &self.0[2 + affix_length + search_index_length..]
     }
 
-    pub(crate) fn get_nth_digest(&self, n: u8) -> Result<TrieRead<'a>, TrieReadError> {
-        if self.tag() == LEAF_TAG {
-            return Ok(TrieRead::TrieLeaf(WireTrieLeafRef(&self.0[1..])));
+    pub(crate) fn get_nth_digest(
+        &self,
+        digest_index: u8,
+    ) -> Result<TrieLeafOrBranch<'a>, TrieReadError> {
+        if self.tag() == Tag::Leaf {
+            return Ok(TrieLeafOrBranch::Leaf(Leaf(&self.0[1..])));
         }
         let branches = self.value_or_branches();
-        let start_idx = n as usize * DIGEST_LENGTH;
+        let start_idx = digest_index as usize * DIGEST_LENGTH;
         if start_idx + DIGEST_LENGTH > branches.len() {
-            Ok(TrieRead::NotFound)
+            Ok(TrieLeafOrBranch::IndexOutOfRange)
         } else {
-            Ok(TrieRead::DigestReadFromNode(
+            Ok(TrieLeafOrBranch::Branch(
                 (&branches[start_idx..start_idx + DIGEST_LENGTH]).try_into()?,
             ))
         }
@@ -230,48 +238,91 @@ impl<'a> WireTrieRef<'a> {
     pub(crate) fn read_using_search_key(
         &self,
         search_key: &[u8],
-        key_bytes_read: u8,
-    ) -> Result<TrieReadWithProof<'a>, TrieReadError> {
+        key_bytes_read: &mut u8,
+    ) -> Result<TrieLeafOrBranch<'a>, TrieReadError> {
         // Determine what variant this trie is by reading the first byte for the code.
         // - the 3 highest bits are the branch code
         // - the 5 lowest bits are the branch count if the node has low radix
         let tag_code = self.tag();
-        if tag_code == LEAF_TAG {
+        if tag_code == Tag::Leaf {
             let key = self.key_or_affix();
-            // If the trie is a leaf but the key doesn't match our key, return NotFound
+            // If the trie is a leaf but the key doesn't match our key, return KeyNotFound
             if key != search_key {
-                return Ok(TrieReadWithProof::NotFound);
+                return Ok(TrieLeafOrBranch::KeyNotFound);
             }
-            return Ok(TrieReadWithProof::TrieLeaf(WireTrieLeafRef(&self.0[1..])));
+            return Ok(TrieLeafOrBranch::Leaf(Leaf(&self.0[1..])));
         }
 
         let affix = self.key_or_affix();
 
-        // If the affix is not prefix of the keys bytes remaining, then return NotFound
-        if search_key.len() <= key_bytes_read as usize + affix.len()
+        // If the affix is not prefix of the keys bytes remaining, then return KeyNotFound
+        if search_key.len() <= *key_bytes_read as usize + affix.len()
             || !affix
                 .iter()
-                .zip(&search_key[key_bytes_read as usize..])
+                .zip(&search_key[*key_bytes_read as usize..])
                 .all(|(affix_byte, key_byte)| affix_byte == key_byte)
         {
-            println!("NotFound");
-            return Ok(TrieReadWithProof::NotFound);
+            return Ok(TrieLeafOrBranch::KeyNotFound);
         }
 
         // Find the next key byte after the affix from the index in the trie
-        let key_byte_to_search_for = search_key[key_bytes_read as usize + affix.len()];
+        let key_byte_to_search_for = search_key[*key_bytes_read as usize + affix.len()];
         let digest_idx = match self.find_branch_byte(&key_byte_to_search_for) {
-            None => return Ok(TrieReadWithProof::NotFound),
-            Some(digest_idx) => digest_idx,
+            None => return Ok(TrieLeafOrBranch::KeyNotFound),
+            Some(digest_idx) => digest_idx as usize,
         };
         let branches = self.value_or_branches();
         let digest =
             branches[digest_idx * DIGEST_LENGTH..(digest_idx + 1) * DIGEST_LENGTH].try_into()?;
 
-        Ok(TrieReadWithProof::DigestWithProof {
+        *key_bytes_read += affix.len() as u8 + 1;
+        Ok(TrieLeafOrBranch::Branch(digest))
+    }
+
+    pub(crate) fn read_with_proof_using_search_key(
+        &self,
+        search_key: &[u8],
+        key_bytes_read: &mut u8,
+    ) -> Result<TrieReadWithProof<'a>, TrieReadError> {
+        // Determine what variant this trie is by reading the first byte for the code.
+        // - the 3 highest bits are the branch code
+        // - the 5 lowest bits are the branch count if the node has low radix
+        let tag_code = self.tag();
+        if tag_code == Tag::Leaf {
+            let key = self.key_or_affix();
+            // If the trie is a leaf but the key doesn't match our key, return NotFound
+            if key != search_key {
+                return Ok(TrieReadWithProof::NotFound);
+            }
+            return Ok(TrieReadWithProof::Leaf(Leaf(&self.0[1..])));
+        }
+
+        let affix = self.key_or_affix();
+
+        // If the affix is not prefix of the keys bytes remaining, then return NotFound
+        if search_key.len() <= *key_bytes_read as usize + affix.len()
+            || !affix
+                .iter()
+                .zip(&search_key[*key_bytes_read as usize..])
+                .all(|(affix_byte, key_byte)| affix_byte == key_byte)
+        {
+            return Ok(TrieReadWithProof::NotFound);
+        }
+
+        // Find the next key byte after the affix from the index in the trie
+        let key_byte_to_search_for = search_key[*key_bytes_read as usize + affix.len()];
+        let digest_idx = match self.find_branch_byte(&key_byte_to_search_for) {
+            None => return Ok(TrieReadWithProof::NotFound),
+            Some(digest_idx) => digest_idx as usize,
+        };
+        let branches = self.value_or_branches();
+        let digest =
+            branches[digest_idx * DIGEST_LENGTH..(digest_idx + 1) * DIGEST_LENGTH].try_into()?;
+
+        *key_bytes_read += affix.len() as u8 + 1;
+        Ok(TrieReadWithProof::BranchWithProof {
             digest,
-            key_bytes_read: key_bytes_read + affix.len() as u8 + 1,
-            proof: TrieProof {
+            proof: Proof {
                 version_byte_and_envelop_hash: self.version_byte_and_envelope_hash().into(),
                 branches_before: &branches[..digest_idx * DIGEST_LENGTH],
                 branches_after: &branches[(digest_idx + 1) * DIGEST_LENGTH..],
@@ -282,7 +333,7 @@ impl<'a> WireTrieRef<'a> {
     pub(crate) fn trie_hash(&self) -> Digest {
         let mut hasher = blake3::Hasher::new();
         hasher.update(self.version_byte_and_envelope_hash().as_bytes());
-        if self.tag() == LEAF_TAG {
+        if self.tag() == Tag::Leaf {
             // TODO: use Merkle/chunk hash for light clients / bridges
             hasher.update(&self.value_or_branches());
         } else {

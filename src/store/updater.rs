@@ -1,7 +1,7 @@
 use crate::{
-    store::InMemoryArchivalStore,
-    wire_trie::{TrieRead, TrieReadError, EMPTY_DIGEST, LEAF_TAG, NODE256_TAG, NODE31_TAG},
-    Digest, WireTrieRef, DIGEST_LENGTH,
+    store::{backends::in_memory::InMemoryStore, TrieStore},
+    wire_trie::{Tag, TrieLeafOrBranch, TrieReadError, EMPTY_DIGEST},
+    Digest, Trie, DIGEST_LENGTH,
 };
 
 // This is an intermediate structure that is created by the Updater
@@ -9,19 +9,21 @@ pub(crate) struct OwnedTrie(Vec<u8>);
 
 impl OwnedTrie {
     pub(crate) fn trie_hash(&self) -> Digest {
-        WireTrieRef::new(&self.0).trie_hash()
+        Trie::new(&self.0).trie_hash()
     }
 
-    pub(crate) fn get_nth_digest(&self, n: u8) -> Result<TrieRead, TrieReadError> {
-        WireTrieRef::new(&self.0).get_nth_digest(n)
-    }
-
-    pub(crate) fn raw_bytes(&self) -> &[u8] {
-        &self.0
+    pub(crate) fn get_nth_digest(&self, n: u8) -> Result<TrieLeafOrBranch, TrieReadError> {
+        Trie::new(&self.0).get_nth_digest(n)
     }
 
     pub(crate) fn version_byte_and_envelope_hash(&self) -> blake3::Hash {
-        WireTrieRef::new(&self.0).version_byte_and_envelope_hash()
+        Trie::new(&self.0).version_byte_and_envelope_hash()
+    }
+}
+
+impl AsRef<[u8]> for OwnedTrie {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
     }
 }
 
@@ -47,7 +49,7 @@ impl TrieLeafRef {
         if key_byte_count > 255 {
             return Err(KeyMustHaveAtMost255Bytes {
                 key_byte_count,
-                key: key.clone(),
+                key,
             });
         }
 
@@ -68,7 +70,7 @@ impl TrieLeafRef {
 impl From<TrieLeafRef> for OwnedTrie {
     fn from(leaf: TrieLeafRef) -> Self {
         let mut data = Vec::with_capacity(1 + leaf.0.len());
-        data.push(LEAF_TAG);
+        data.push(Tag::Leaf as u8);
         data.extend(leaf.0);
         OwnedTrie(data)
     }
@@ -208,39 +210,39 @@ fn empty_branches() -> [UpdatingTrie; 256] {
 
 #[derive(thiserror::Error, Debug)]
 pub enum TrieToFancyTrieConversionError {
-    #[error("Invalid trie tag code: {0}")]
-    InvalidTrieTagCode(u8),
+    #[error("Invalid trie tag code")]
+    InvalidTrieTagCode,
 
     #[error(transparent)]
     TryFromSliceError(#[from] std::array::TryFromSliceError),
 }
 
-impl TryFrom<WireTrieRef<'_>> for UpdatingTrie {
+impl TryFrom<Trie<'_>> for UpdatingTrie {
     type Error = TrieToFancyTrieConversionError;
 
-    fn try_from(trie: WireTrieRef) -> Result<Self, Self::Error> {
+    fn try_from(trie: Trie) -> Result<Self, Self::Error> {
         let data = trie.raw_bytes();
 
         // TODO: Use accessors
         // The 3 highest significant bits are the tag code, the lower 5 bits are the branch count.
         let tag_code_and_branch_count = data[0];
-        let tag_code = trie.tag();
+        let tag = trie.tag();
         let data = &data[1..];
 
         // Get the affix.
-        let affix_length = match tag_code {
-            LEAF_TAG => {
+        let affix_length = match tag {
+            Tag::Leaf => {
                 return Ok(UpdatingTrie::leaf(TrieLeafRef(data.to_vec())));
             }
-            NODE31_TAG | NODE256_TAG => data[0] as usize,
-            _ => return Err(TrieToFancyTrieConversionError::InvalidTrieTagCode(tag_code)),
+            Tag::Node31 | Tag::Node256 => data[0] as usize,
+            _ => return Err(TrieToFancyTrieConversionError::InvalidTrieTagCode),
         };
         let affix = data[1..affix_length + 1].to_vec();
         let data = &data[affix_length + 1..];
 
         let mut branches = empty_branches();
-        let branch_count = match tag_code {
-            NODE31_TAG => {
+        let branch_count = match tag {
+            Tag::Node31 => {
                 // Branch count is the lower 5 bits of the first byte (the higher bits are the tag)
                 let branch_count = (tag_code_and_branch_count & 0b11111) as usize;
                 for idx in 0..branch_count {
@@ -253,7 +255,7 @@ impl TryFrom<WireTrieRef<'_>> for UpdatingTrie {
                 }
                 branch_count as u8
             }
-            NODE256_TAG => {
+            Tag::Node256 => {
                 let mut idx = 0;
                 for i in 0..4usize {
                     let mut branch_index: u64 =
@@ -285,7 +287,7 @@ impl TryFrom<&OwnedTrie> for UpdatingTrie {
     type Error = TrieToFancyTrieConversionError;
 
     fn try_from(owned_trie: &OwnedTrie) -> Result<Self, Self::Error> {
-        UpdatingTrie::try_from(WireTrieRef::new(&owned_trie.0))
+        UpdatingTrie::try_from(Trie::new(&owned_trie.0))
     }
 }
 
@@ -324,11 +326,11 @@ impl TryFrom<&Node> for OwnedTrie {
                     + branch_count        // branches search index
                     + 32 * branch_count, // hashes of each branch
             );
-            data.push(NODE31_TAG << 5 | branch_count as u8);
+            data.push((Tag::Node31 as u8) << 5 | branch_count as u8);
             data.push(affix.len() as u8);
             data.extend(affix);
             let mut branch_bytes = Vec::<u8>::with_capacity(32 * branch_count);
-            for (idx, updating_trie) in branches.into_iter().enumerate() {
+            for (idx, updating_trie) in branches.iter().enumerate() {
                 match updating_trie {
                     UpdatingTrie::Empty => continue,
                     UpdatingTrie::Node(_) | UpdatingTrie::Leaf(_) => {
@@ -352,12 +354,12 @@ impl TryFrom<&Node> for OwnedTrie {
                     + 32                 // branches bit-array
                     + 32 * branch_count, // hashes of each branch
             );
-            data.push(NODE256_TAG << 5);
+            data.push((Tag::Node256 as u8) << 5);
             data.push(affix.len() as u8);
             data.extend(affix);
             let mut branch_bytes: Vec<u8> = vec![];
             let mut index_chunk = 0u64;
-            let mut branches = branches.into_iter().enumerate();
+            let mut branches = branches.iter().enumerate();
             match branches.next() {
                 Some((0, UpdatingTrie::Empty)) => (),
                 Some((0, UpdatingTrie::Digest(digest))) => {
@@ -400,7 +402,7 @@ impl TryFrom<&Node> for OwnedTrie {
 #[derive(Debug)]
 pub struct Updater<'a> {
     current_state: UpdatingTrie,
-    store: &'a mut InMemoryArchivalStore,
+    store: &'a mut InMemoryStore,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -419,7 +421,7 @@ pub enum UpdaterPutError {
 }
 
 impl<'a> Updater<'a> {
-    pub(crate) fn new(store: &mut InMemoryArchivalStore, state_root: Digest) -> Updater {
+    pub(crate) fn new(store: &mut InMemoryStore, state_root: Digest) -> Updater {
         let current_state = if state_root == EMPTY_DIGEST {
             UpdatingTrie::Empty
         } else {
@@ -445,7 +447,7 @@ impl<'a> Updater<'a> {
                 }
                 UpdatingTrie::Digest(digest) => {
                     // If we have hit a digest, load the trie from the store and loop again.
-                    let mut updating_trie = match self.store.get_trie_ref(&**digest) {
+                    let mut updating_trie = match self.store.get_trie(&**digest) {
                         None => {
                             return Err(UpdaterPutError::DigestNotFound(digest.clone()));
                         }
@@ -529,7 +531,7 @@ impl<'a> Updater<'a> {
         }
         let mut new_trie = UpdatingTrie::Leaf(new_leaf);
         std::mem::swap(traversed_state, &mut new_trie);
-        return Ok(());
+        Ok(())
     }
 
     // TODO: look into hadoop-style reducers here
@@ -551,7 +553,7 @@ impl<'a> Updater<'a> {
             UpdatingTrie::Leaf(leaf) => {
                 let owned_trie = OwnedTrie::from(*leaf);
                 let digest = owned_trie.trie_hash();
-                store.put_trie(digest.clone(), owned_trie);
+                store.put_trie(digest, owned_trie);
                 return digest;
             }
             UpdatingTrie::Node(node) => node,
@@ -592,7 +594,7 @@ impl<'a> Updater<'a> {
                         if let UpdatingTrie::Leaf(leaf) = leaf {
                             let owned_trie = OwnedTrie::from(*leaf);
                             let digest = owned_trie.trie_hash();
-                            store.put_trie(digest.clone(), owned_trie);
+                            store.put_trie(digest, owned_trie);
                             std::mem::swap(branch, &mut UpdatingTrie::digest(digest));
                         }
                     }
@@ -615,7 +617,7 @@ impl<'a> Updater<'a> {
             } else {
                 let owned_trie = OwnedTrie::try_from(&*node).expect("node must be flat");
                 let digest = owned_trie.trie_hash();
-                store.put_trie(digest.clone(), owned_trie);
+                store.put_trie(digest, owned_trie);
                 digest_to_be_slotted_into_node_at_top_of_stack = Some(digest);
             }
         }
@@ -635,10 +637,10 @@ struct InvalidKeyLength {
 mod tests {
     use crate::{
         store::{
+            backends::in_memory::InMemoryStore,
             updater::{Node, NodeMustBeFlatError, OwnedTrie, TrieLeafRef, Updater, UpdatingTrie},
-            InMemoryArchivalStore,
         },
-        wire_trie::{TrieRead, EMPTY_DIGEST},
+        wire_trie::{TrieLeafOrBranch, EMPTY_DIGEST},
         Digest,
     };
 
@@ -728,13 +730,13 @@ mod tests {
                         .get_nth_digest(idx as u8)
                         .expect("Should read digest")
                     {
-                        TrieRead::DigestReadFromNode(digest) => *digest,
+                        TrieLeafOrBranch::Branch(digest) => digest,
                         unexpected_trie_read_output => panic!(
                             "Unexpected trie read output with branches {} and offset {} (idx = {}): {:?}",
                             branch_count, offset, idx, unexpected_trie_read_output
                         ),
                     };
-                    assert_eq!(expected_digest, retrieved_digest);
+                    assert_eq!(expected_digest, *retrieved_digest);
                     idx += 1;
                 }
             }
@@ -761,7 +763,7 @@ mod tests {
 
     #[test]
     fn updater_put_one() {
-        let mut store = InMemoryArchivalStore::new();
+        let mut store = InMemoryStore::new();
         let mut updater = Updater::new(&mut store, EMPTY_DIGEST);
         let key = vec![0, 1, 2, 3];
         let value = vec![0, 1, 2, 3];
@@ -776,7 +778,7 @@ mod tests {
 
     #[test]
     fn updater_put_same_key_twice() {
-        let mut store = InMemoryArchivalStore::new();
+        let mut store = InMemoryStore::new();
         let mut updater = Updater::new(&mut store, EMPTY_DIGEST);
         let key = vec![0, 1, 2, 3];
         let value1 = vec![0, 1, 2, 3];
@@ -795,7 +797,7 @@ mod tests {
 
     #[test]
     fn updater_put_different_keys_with_different_final_byte() {
-        let mut store = InMemoryArchivalStore::new();
+        let mut store = InMemoryStore::new();
         let mut updater = Updater::new(&mut store, EMPTY_DIGEST);
         let key1 = vec![0, 1, 2, 3];
         let key2 = vec![0, 1, 2, 4];
