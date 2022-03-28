@@ -334,8 +334,5 @@ mod tests {
             retrieved_keys.sort();
             assert_eq!(keys, retrieved_keys)
         }
-
-        // TODO: put in many keys with the same value as the key prefixed by length
-        // Read them all back to make sure you have all of the expected values
     }
 }
