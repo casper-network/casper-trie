@@ -7,6 +7,10 @@ use crate::{
 // This is an intermediate structure that is created by the Updater
 pub(crate) struct OwnedTrie(Vec<u8>);
 
+/// Keys can be zero in length, but we want to represent every possible key length with a u8.
+/// The maximum u8 is 255.
+pub const MAX_KEY_BYTES_LEN: u8 = 255;
+
 impl OwnedTrie {
     pub(crate) fn trie_hash(&self) -> Digest {
         Trie::new(&self.0).trie_hash()
@@ -46,7 +50,7 @@ pub struct KeyMustHaveAtMost255Bytes {
 impl TrieLeafRef {
     pub(crate) fn new(key: Vec<u8>, value: Vec<u8>) -> Result<Self, KeyMustHaveAtMost255Bytes> {
         let key_byte_count = key.len();
-        if key_byte_count > 255 {
+        if key_byte_count > MAX_KEY_BYTES_LEN as usize {
             return Err(KeyMustHaveAtMost255Bytes {
                 key_byte_count,
                 key,

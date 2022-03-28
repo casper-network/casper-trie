@@ -5,6 +5,7 @@ pub use crate::wire_trie::{Digest, Trie, DIGEST_LENGTH};
 
 #[cfg(test)]
 mod tests {
+    use crate::store::updater::MAX_KEY_BYTES_LEN;
     use crate::{
         store::{
             updater::{Node, OwnedTrie, Updater, UpdatingTrie},
@@ -29,7 +30,7 @@ mod tests {
 
     #[test]
     fn node_with_one_branch_round_trip() {
-        for branch_idx in 0..=255 {
+        for branch_idx in 0..=MAX_KEY_BYTES_LEN {
             let node = node_with_one_branch(branch_idx);
             let owned_trie = OwnedTrie::try_from(&node).expect("should convert to trie bytes");
             let expected = UpdatingTrie::node(node_with_one_branch(branch_idx));
@@ -212,10 +213,12 @@ mod tests {
     // TODO: Test do-nothing updater on Some digest
 
     mod proptests {
+        use crate::store::updater::MAX_KEY_BYTES_LEN;
         use crate::{
             store::{updater::Updater, InMemoryStore},
             wire_trie::EMPTY_DIGEST,
         };
+        use std::collections::HashSet;
         use test_strategy::proptest;
 
         #[proptest]
@@ -303,6 +306,33 @@ mod tests {
                 .collect();
 
             assert_eq!(expected, actual)
+        }
+
+        #[proptest]
+        fn variable_length_keys(keys: HashSet<Vec<u8>>) {
+            let mut keys: Vec<Vec<u8>> = keys.into_iter().collect();
+            keys.iter_mut()
+                .for_each(|key| key.truncate(MAX_KEY_BYTES_LEN as usize));
+            keys.sort();
+
+            let mut store = InMemoryStore::new();
+
+            let root = {
+                let mut updater = Updater::new(&mut store, EMPTY_DIGEST);
+                for key in &keys {
+                    let mut prefixed_key = vec![key.len() as u8];
+                    prefixed_key.extend(key);
+                    updater.put(prefixed_key, vec![0u8]).expect("Could not put");
+                }
+                updater.commit()
+            };
+
+            let mut retrieved_keys: Vec<Vec<u8>> = store
+                .leaves_under_prefix(root, &[])
+                .map(|leaf| leaf.key()[1..].to_vec())
+                .collect();
+            retrieved_keys.sort();
+            assert_eq!(keys, retrieved_keys)
         }
 
         // TODO: put in many keys with the same value as the key prefixed by length
