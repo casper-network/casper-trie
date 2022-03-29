@@ -301,7 +301,7 @@ mod tests {
                 .map(|leaf| {
                     leaf.key()
                         .try_into()
-                        .expect("Could not convert trie leaf key to [u8; 5]")
+                        .expect("Could not convert trie leaf key to [u8; 10]")
                 })
                 .collect();
 
