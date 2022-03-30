@@ -1,5 +1,5 @@
 use crate::{
-    store::{updater::OwnedTrie, TrieLeavesUnderPrefixIterator, TrieStore},
+    store::{updater::OwnedTrie, TrieStore},
     Digest, Trie,
 };
 use std::{collections::HashMap, convert::Infallible};
@@ -40,17 +40,4 @@ impl InMemoryStore {
     // TODO: Read with proof
     // TODO: rethink find_missing_descendants
     // TODO: Bulk trie retrieve
-    pub fn leaves_under_prefix<'a, 'b>(
-        &'a self,
-        root: Digest,
-        prefix: &'b [u8],
-    ) -> TrieLeavesUnderPrefixIterator<'a, 'b, Self> {
-        TrieLeavesUnderPrefixIterator {
-            root,
-            store: self,
-            prefix,
-            initialized: false,
-            node_stack: vec![],
-        }
-    }
 }

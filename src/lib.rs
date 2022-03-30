@@ -8,7 +8,7 @@ mod tests {
     use crate::{
         store::{
             updater::{Node, OwnedTrie, Updater, UpdatingTrie, MAX_KEY_BYTES_LEN},
-            InMemoryStore,
+            InMemoryStore, TrieStore,
         },
         wire_trie::{Tag, EMPTY_TRIE_ROOT},
     };
@@ -85,7 +85,7 @@ mod tests {
         let root = updater.commit();
         let expected_keys = vec![key1, key2];
         let keys_from_storage: Vec<Vec<u8>> = store
-            .leaves_under_prefix(root, &[])
+            .leaves_under_prefix(root, vec![])
             .map(|leaf_result| leaf_result.expect("Could not get leaf").key().to_owned())
             .collect();
         assert_eq!(expected_keys, keys_from_storage)
@@ -111,7 +111,7 @@ mod tests {
         let root = updater.commit();
         let expected_keys = vec![key1, key2];
         let keys_from_storage: Vec<Vec<u8>> = store
-            .leaves_under_prefix(root, &[0, 1, 2])
+            .leaves_under_prefix(root, vec![0, 1, 2])
             .map(|leaf_result| leaf_result.expect("Could not get leaf").key().to_owned())
             .collect();
         assert_eq!(expected_keys, keys_from_storage)
@@ -177,7 +177,7 @@ mod tests {
 
         for key in keys {
             let keys_from_storage: Vec<Vec<u8>> = store
-                .leaves_under_prefix(root, key.as_slice())
+                .leaves_under_prefix(root, key.to_vec())
                 .map(|leaf_result| leaf_result.expect("Could not get leaf").key().to_owned())
                 .collect();
             assert_eq!(vec![key.as_ref()], keys_from_storage)
@@ -211,7 +211,7 @@ mod tests {
 
         for key in keys {
             let keys_from_storage: Vec<Vec<u8>> = store
-                .leaves_under_prefix(root, key.as_slice())
+                .leaves_under_prefix(root, key.to_vec())
                 .map(|leaf_result| leaf_result.expect("Could not get leaf").key().to_owned())
                 .collect();
             assert_eq!(vec![key.as_ref()], keys_from_storage)
@@ -231,7 +231,7 @@ mod tests {
         let mut store = InMemoryStore::new();
         let updater = Updater::new(&mut store, EMPTY_TRIE_ROOT);
         let root = updater.commit();
-        let leaves: Vec<_> = store.leaves_under_prefix(root, &[]).collect();
+        let leaves: Vec<_> = store.leaves_under_prefix(root, vec![]).collect();
         dbg!(&leaves);
         assert!(leaves.is_empty())
     }
@@ -247,7 +247,7 @@ mod tests {
         use crate::{
             store::{
                 updater::{Updater, MAX_KEY_BYTES_LEN},
-                InMemoryStore,
+                InMemoryStore, TrieStore,
             },
             wire_trie::EMPTY_TRIE_ROOT,
         };
@@ -336,7 +336,7 @@ mod tests {
                 .filter(|key| key.starts_with(&prefix))
                 .collect();
             let actual: Vec<[u8; 10]> = store
-                .leaves_under_prefix(root, &prefix)
+                .leaves_under_prefix(root, prefix)
                 .map(|leaf_result| {
                     leaf_result
                         .expect("Could not get leaf")
@@ -381,7 +381,7 @@ mod tests {
                 .filter(|key| key.starts_with(&prefix))
                 .collect();
             let actual: Vec<Vec<u8>> = store
-                .leaves_under_prefix(root, &prefix)
+                .leaves_under_prefix(root, prefix)
                 .map(|leaf_result| {
                     leaf_result
                         .expect("Could not get leaf")
@@ -416,7 +416,7 @@ mod tests {
             };
 
             let mut retrieved_keys: Vec<Vec<u8>> = store
-                .leaves_under_prefix(root, &[])
+                .leaves_under_prefix(root, vec![])
                 .map(|leaf_result| leaf_result.expect("Could not get leaf").key()[1..].to_vec())
                 .collect();
             retrieved_keys.sort();

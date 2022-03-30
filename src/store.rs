@@ -15,9 +15,17 @@ use crate::{
 // TODO: struct Ref(u64)
 // TODO struct Store { roots: HashMap<Digest, Ref>, tries: HashMap<Ref, Vec<u8>> }
 
-pub trait TrieStore {
+pub trait TrieStore: Sized {
     type Error: std::error::Error;
     fn get_trie(&self, digest: &Digest) -> Result<Option<Trie>, Self::Error>;
+
+    fn leaves_under_prefix(
+        &self,
+        root: Digest,
+        prefix: Vec<u8>,
+    ) -> TrieLeavesUnderPrefixIterator<Self> {
+        TrieLeavesUnderPrefixIterator::new(self, root, prefix)
+    }
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -35,15 +43,27 @@ where
     TrieReadError(#[from] TrieReadError),
 }
 
-pub struct TrieLeavesUnderPrefixIterator<'a, 'b, S> {
+pub struct TrieLeavesUnderPrefixIterator<'a, S> {
     root: Digest,
     store: &'a S,
-    prefix: &'b [u8],
+    prefix: Vec<u8>,
     initialized: bool,
     node_stack: Vec<(Digest, u8)>,
 }
 
-impl<'a, 'b, S> Iterator for TrieLeavesUnderPrefixIterator<'a, 'b, S>
+impl<'a, S> TrieLeavesUnderPrefixIterator<'a, S> {
+    pub fn new(store: &'a S, root: Digest, prefix: Vec<u8>) -> Self {
+        Self {
+            root,
+            store,
+            prefix,
+            initialized: false,
+            node_stack: Vec::new(),
+        }
+    }
+}
+
+impl<'a, S> Iterator for TrieLeavesUnderPrefixIterator<'a, S>
 where
     S: TrieStore,
 {
@@ -77,7 +97,7 @@ where
 
                 if trie.tag() == Tag::Leaf {
                     self.initialized = true;
-                    if trie.key_or_affix().starts_with(self.prefix) {
+                    if trie.key_or_affix().starts_with(&self.prefix) {
                         return Some(Ok(Leaf::new(trie)));
                     } else {
                         return None;
@@ -95,7 +115,7 @@ where
                     break;
                 }
                 if let Ok(TrieLeafOrBranch::Branch(digest)) =
-                    trie.read_using_search_key(self.prefix, &mut prefix_bytes_read)
+                    trie.read_using_search_key(&self.prefix, &mut prefix_bytes_read)
                 {
                     current_lookup_digest = *digest;
                 } else {
