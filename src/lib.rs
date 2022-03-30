@@ -251,7 +251,7 @@ mod tests {
             },
             wire_trie::EMPTY_TRIE_ROOT,
         };
-        use std::collections::HashSet;
+        use std::collections::{BTreeSet, HashSet};
         use test_strategy::proptest;
 
         #[proptest]
@@ -316,9 +316,8 @@ mod tests {
         }
 
         #[proptest]
-        fn prefix_iterator(prefix: Vec<u8>, keys: Vec<[u8; 10]>) {
-            let mut keys = keys;
-            keys.sort();
+        fn prefix_iterator(prefix: Vec<u8>, keys: BTreeSet<[u8; 10]>) {
+            let keys = keys.into_iter().collect::<Vec<_>>();
 
             let mut store = InMemoryStore::new();
 
@@ -337,6 +336,51 @@ mod tests {
                 .filter(|key| key.starts_with(&prefix))
                 .collect();
             let actual: Vec<[u8; 10]> = store
+                .leaves_under_prefix(root, &prefix)
+                .map(|leaf_result| {
+                    leaf_result
+                        .expect("Could not get leaf")
+                        .key()
+                        .try_into()
+                        .expect("Could not convert trie leaf key to [u8; 10]")
+                })
+                .collect();
+
+            assert_eq!(expected, actual)
+        }
+
+        #[proptest]
+        fn prefix_iterator_bool(prefix: Vec<bool>, keys: BTreeSet<[bool; 10]>) {
+            let keys: Vec<Vec<u8>> = keys
+                .into_iter()
+                .map(|key| {
+                    key.into_iter()
+                        .map(|bit| if bit { 1u8 } else { 0u8 })
+                        .collect::<Vec<u8>>()
+                })
+                .collect();
+            let prefix: Vec<u8> = prefix
+                .into_iter()
+                .map(|bit| if bit { 1u8 } else { 0u8 })
+                .collect();
+
+            let mut store = InMemoryStore::new();
+
+            let root = {
+                let mut updater = Updater::new(&mut store, EMPTY_TRIE_ROOT);
+                for key in &keys {
+                    updater
+                        .put(key.as_ref(), [0u8].as_ref())
+                        .expect("Could not put");
+                }
+                updater.commit()
+            };
+
+            let expected: Vec<_> = keys
+                .into_iter()
+                .filter(|key| key.starts_with(&prefix))
+                .collect();
+            let actual: Vec<Vec<u8>> = store
                 .leaves_under_prefix(root, &prefix)
                 .map(|leaf_result| {
                     leaf_result
