@@ -1,6 +1,6 @@
 pub const DIGEST_LENGTH: usize = 32;
 pub type Digest = [u8; DIGEST_LENGTH];
-pub const EMPTY_DIGEST: [u8; DIGEST_LENGTH] = [0u8; DIGEST_LENGTH];
+pub const EMPTY_TRIE_ROOT: [u8; DIGEST_LENGTH] = [0u8; DIGEST_LENGTH];
 
 const VERSION: u8 = 0;
 
@@ -335,7 +335,7 @@ impl<'a> Trie<'a> {
         hasher.update(self.version_byte_and_envelope_hash().as_bytes());
         if self.tag() == Tag::Leaf {
             // TODO: use Merkle/chunk hash for light clients / bridges
-            hasher.update(&self.value_or_branches());
+            hasher.update(self.value_or_branches());
         } else {
             for digest in self.value_or_branches().chunks_exact(32) {
                 hasher.update(digest);

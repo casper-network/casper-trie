@@ -2,21 +2,29 @@ use crate::{
     store::{updater::OwnedTrie, TrieLeavesUnderPrefixIterator, TrieStore},
     Digest, Trie,
 };
-use std::collections::HashMap;
+use std::{collections::HashMap, convert::Infallible};
 
 #[derive(Debug)]
 pub struct InMemoryStore(HashMap<Digest, Vec<u8>>);
 
 impl TrieStore for InMemoryStore {
-    fn get_trie(&self, digest: &Digest) -> Option<Trie> {
-        self.0.get(digest).map(|trie_bytes| Trie::new(&*trie_bytes))
+    type Error = Infallible;
+
+    fn get_trie(&self, digest: &Digest) -> Result<Option<Trie>, Self::Error> {
+        Ok(self.0.get(digest).map(|trie_bytes| Trie::new(&*trie_bytes)))
+    }
+}
+
+impl Default for InMemoryStore {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 impl InMemoryStore {
     // TODO: Public interface: get and put_many
 
-    pub(crate) fn new() -> InMemoryStore {
+    pub fn new() -> InMemoryStore {
         InMemoryStore(HashMap::new())
     }
 

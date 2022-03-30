@@ -1,17 +1,16 @@
-mod store;
+pub mod store;
 mod wire_trie;
 
-pub use crate::wire_trie::{Digest, Trie, DIGEST_LENGTH};
+pub use crate::wire_trie::{Digest, Trie, DIGEST_LENGTH, EMPTY_TRIE_ROOT};
 
 #[cfg(test)]
 mod tests {
-    use crate::store::updater::MAX_KEY_BYTES_LEN;
     use crate::{
         store::{
-            updater::{Node, OwnedTrie, Updater, UpdatingTrie},
+            updater::{Node, OwnedTrie, Updater, UpdatingTrie, MAX_KEY_BYTES_LEN},
             InMemoryStore,
         },
-        wire_trie::{Leaf, Tag, EMPTY_DIGEST},
+        wire_trie::{Tag, EMPTY_TRIE_ROOT},
     };
 
     fn node_with_one_branch(branch_idx: u8) -> Node {
@@ -34,7 +33,8 @@ mod tests {
             let node = node_with_one_branch(branch_idx);
             let owned_trie = OwnedTrie::try_from(&node).expect("should convert to trie bytes");
             let expected = UpdatingTrie::node(node_with_one_branch(branch_idx));
-            let parsed = UpdatingTrie::try_from(&owned_trie).expect("should convert to FancyTrie");
+            let parsed =
+                UpdatingTrie::try_from(&owned_trie).expect("should convert to UpdatingTrie");
             assert_eq!(expected, parsed, "Bad idx: {}", branch_idx)
         }
     }
@@ -43,50 +43,50 @@ mod tests {
     #[ignore]
     fn updating_trie_is_small() {
         let size = std::mem::size_of::<UpdatingTrie>();
-        assert_eq!(size, 8, "FancyTrie bytes")
+        assert_eq!(size, 8, "UpdatingTrie bytes")
     }
 
     #[test]
     #[ignore]
     fn option_box_updating_trie_is_small() {
         let size = std::mem::size_of::<Option<Box<UpdatingTrie>>>();
-        assert_eq!(size, 16, "FancyTrie bytes")
+        assert_eq!(size, 16, "UpdatingTrie bytes")
     }
 
     #[test]
     #[should_panic]
     fn updater_throws_if_one_key_is_a_prefix_of_another() {
         let mut store = InMemoryStore::new();
-        let mut updater = Updater::new(&mut store, EMPTY_DIGEST);
+        let mut updater = Updater::new(&mut store, EMPTY_TRIE_ROOT);
         let key1 = vec![0, 1, 2, 3];
         let key2 = vec![0, 1, 2];
         let value = vec![0, 1, 2, 3];
         updater
-            .put(key1.clone(), value.clone())
+            .put(key1.as_ref(), value.as_ref())
             .expect("Could not put");
         updater
-            .put(key2.clone(), value.clone())
+            .put(key2.as_ref(), value.as_ref())
             .expect("Should panic here because key2 is a prefix of key1");
     }
 
     #[test]
     fn put_two_keys_and_read_back_from_storage() {
         let mut store = InMemoryStore::new();
-        let mut updater = Updater::new(&mut store, EMPTY_DIGEST);
+        let mut updater = Updater::new(&mut store, EMPTY_TRIE_ROOT);
         let key1 = vec![0, 1, 2, 3];
         let key2 = vec![0, 1, 2, 4];
         let value = vec![0, 1, 2, 3];
         updater
-            .put(key1.clone(), value.clone())
+            .put(key1.as_ref(), value.as_ref())
             .expect("Could not put");
         updater
-            .put(key2.clone(), value.clone())
+            .put(key2.as_ref(), value.as_ref())
             .expect("Could not put");
         let root = updater.commit();
         let expected_keys = vec![key1, key2];
         let keys_from_storage: Vec<Vec<u8>> = store
             .leaves_under_prefix(root, &[])
-            .map(|leaf: Leaf| leaf.key().to_owned())
+            .map(|leaf_result| leaf_result.expect("Could not get leaf").key().to_owned())
             .collect();
         assert_eq!(expected_keys, keys_from_storage)
     }
@@ -94,25 +94,25 @@ mod tests {
     #[test]
     fn put_three_keys_iterate_with_prefix() {
         let mut store = InMemoryStore::new();
-        let mut updater = Updater::new(&mut store, EMPTY_DIGEST);
+        let mut updater = Updater::new(&mut store, EMPTY_TRIE_ROOT);
         let key1 = vec![0, 1, 2, 3];
         let key2 = vec![0, 1, 2, 4];
         let key3 = vec![0, 1, 3, 3];
         let value = vec![0, 1, 2, 3];
         updater
-            .put(key1.clone(), value.clone())
+            .put(key1.as_ref(), value.as_ref())
             .expect("Could not put");
         updater
-            .put(key2.clone(), value.clone())
+            .put(key2.as_ref(), value.as_ref())
             .expect("Could not put");
         updater
-            .put(key3.clone(), value.clone())
+            .put(key3.as_ref(), value.as_ref())
             .expect("Could not put");
         let root = updater.commit();
         let expected_keys = vec![key1, key2];
         let keys_from_storage: Vec<Vec<u8>> = store
             .leaves_under_prefix(root, &[0, 1, 2])
-            .map(|leaf: Leaf| leaf.key().to_owned())
+            .map(|leaf_result| leaf_result.expect("Could not get leaf").key().to_owned())
             .collect();
         assert_eq!(expected_keys, keys_from_storage)
     }
@@ -123,10 +123,12 @@ mod tests {
 
         let mut store = InMemoryStore::new();
 
-        let mut updater = Updater::new(&mut store, EMPTY_DIGEST);
-        palindrome_keys
-            .iter()
-            .for_each(|key| updater.put(key.to_vec(), vec![0u8]).expect("Could not put"));
+        let mut updater = Updater::new(&mut store, EMPTY_TRIE_ROOT);
+        palindrome_keys.iter().for_each(|key| {
+            updater
+                .put(key.as_ref(), [0u8].as_ref())
+                .expect("Could not put")
+        });
         let _ = updater.commit();
     }
 
@@ -136,9 +138,12 @@ mod tests {
 
         let mut store = InMemoryStore::new();
 
-        let mut updater = Updater::new(&mut store, EMPTY_DIGEST);
-        keys.iter()
-            .for_each(|key| updater.put(key.to_vec(), vec![0u8]).expect("Could not put"));
+        let mut updater = Updater::new(&mut store, EMPTY_TRIE_ROOT);
+        keys.iter().for_each(|key| {
+            updater
+                .put(key.as_ref(), [0u8].as_ref())
+                .expect("Could not put")
+        });
         let _ = updater.commit();
     }
 
@@ -147,9 +152,12 @@ mod tests {
         let keys = [[0, 0], [0, 1], [1, 0], [1, 1]];
 
         let mut store = InMemoryStore::new();
-        let mut updater = Updater::new(&mut store, EMPTY_DIGEST);
-        keys.iter()
-            .for_each(|key| updater.put(key.to_vec(), vec![0u8]).expect("Could not put"));
+        let mut updater = Updater::new(&mut store, EMPTY_TRIE_ROOT);
+        keys.iter().for_each(|key| {
+            updater
+                .put(key.as_ref(), [0u8].as_ref())
+                .expect("Could not put")
+        });
         let _ = updater.commit();
     }
 
@@ -159,17 +167,20 @@ mod tests {
 
         let mut store = InMemoryStore::new();
 
-        let mut updater = Updater::new(&mut store, EMPTY_DIGEST);
-        keys.iter()
-            .for_each(|key| updater.put(key.to_vec(), vec![0u8]).expect("Could not put"));
+        let mut updater = Updater::new(&mut store, EMPTY_TRIE_ROOT);
+        keys.iter().for_each(|key| {
+            updater
+                .put(key.as_ref(), [0u8].as_ref())
+                .expect("Could not put")
+        });
         let root = updater.commit();
 
         for key in keys {
             let keys_from_storage: Vec<Vec<u8>> = store
                 .leaves_under_prefix(root, key.as_slice())
-                .map(|leaf: Leaf| leaf.key().to_owned())
+                .map(|leaf_result| leaf_result.expect("Could not get leaf").key().to_owned())
                 .collect();
-            assert_eq!(vec![key.to_vec()], keys_from_storage)
+            assert_eq!(vec![key.as_ref()], keys_from_storage)
         }
     }
 
@@ -190,18 +201,39 @@ mod tests {
 
         let mut store = InMemoryStore::new();
 
-        let mut updater = Updater::new(&mut store, EMPTY_DIGEST);
-        keys.iter()
-            .for_each(|key| updater.put(key.to_vec(), vec![0u8]).expect("Could not put"));
+        let mut updater = Updater::new(&mut store, EMPTY_TRIE_ROOT);
+        keys.iter().for_each(|key| {
+            updater
+                .put(key.as_ref(), [0u8].as_ref())
+                .expect("Could not put")
+        });
         let root = updater.commit();
 
         for key in keys {
             let keys_from_storage: Vec<Vec<u8>> = store
                 .leaves_under_prefix(root, key.as_slice())
-                .map(|leaf: Leaf| leaf.key().to_owned())
+                .map(|leaf_result| leaf_result.expect("Could not get leaf").key().to_owned())
                 .collect();
-            assert_eq!(vec![key.to_vec()], keys_from_storage)
+            assert_eq!(vec![key.as_ref()], keys_from_storage)
         }
+    }
+
+    #[test]
+    fn empty_trie() {
+        let mut store = InMemoryStore::new();
+        let updater = Updater::new(&mut store, EMPTY_TRIE_ROOT);
+        let root = updater.commit();
+        assert_eq!(root, EMPTY_TRIE_ROOT)
+    }
+
+    #[test]
+    fn empty_leaf_iterator() {
+        let mut store = InMemoryStore::new();
+        let updater = Updater::new(&mut store, EMPTY_TRIE_ROOT);
+        let root = updater.commit();
+        let leaves: Vec<_> = store.leaves_under_prefix(root, &[]).collect();
+        dbg!(&leaves);
+        assert!(leaves.is_empty())
     }
 
     // TODO: Test putting keys (updating along the way) and putting in keys (updating along the way)
@@ -209,14 +241,15 @@ mod tests {
     //
     // TODO: Test reading with proof
     // TODO: Test iterating with a non-empty prefix
-    // TODO: Test do-nothing updater on EMPTY_DIGEST
     // TODO: Test do-nothing updater on Some digest
 
     mod proptests {
-        use crate::store::updater::MAX_KEY_BYTES_LEN;
         use crate::{
-            store::{updater::Updater, InMemoryStore},
-            wire_trie::EMPTY_DIGEST,
+            store::{
+                updater::{Updater, MAX_KEY_BYTES_LEN},
+                InMemoryStore,
+            },
+            wire_trie::EMPTY_TRIE_ROOT,
         };
         use std::collections::HashSet;
         use test_strategy::proptest;
@@ -226,20 +259,20 @@ mod tests {
             let mut store = InMemoryStore::new();
 
             let forward_digest = {
-                let mut forward_updater = Updater::new(&mut store, EMPTY_DIGEST);
+                let mut forward_updater = Updater::new(&mut store, EMPTY_TRIE_ROOT);
                 keys.iter().for_each(|key| {
                     forward_updater
-                        .put(key.to_vec(), vec![0u8])
+                        .put(key.as_ref(), [0u8].as_ref())
                         .expect("Could not put")
                 });
                 forward_updater.commit()
             };
 
             let reverse_digest = {
-                let mut reverse_updater = Updater::new(&mut store, EMPTY_DIGEST);
+                let mut reverse_updater = Updater::new(&mut store, EMPTY_TRIE_ROOT);
                 keys.iter().rev().for_each(|key| {
                     reverse_updater
-                        .put(key.to_vec(), vec![0u8])
+                        .put(key.as_ref(), [0u8].as_ref())
                         .expect("Could not put")
                 });
                 reverse_updater.commit()
@@ -253,24 +286,29 @@ mod tests {
             let mut store = InMemoryStore::new();
 
             let insert_all_at_once_digest = {
-                let mut updater = Updater::new(&mut store, EMPTY_DIGEST);
-                keys1
-                    .iter()
-                    .chain(keys2.iter())
-                    .for_each(|key| updater.put(key.to_vec(), vec![0u8]).expect("Could not put"));
+                let mut updater = Updater::new(&mut store, EMPTY_TRIE_ROOT);
+                keys1.iter().chain(keys2.iter()).for_each(|key| {
+                    updater
+                        .put(key.as_ref(), [0u8].as_ref())
+                        .expect("Could not put")
+                });
                 updater.commit()
             };
 
             let insert_and_insert_again_digest = {
-                let mut updater = Updater::new(&mut store, EMPTY_DIGEST);
-                keys1
-                    .iter()
-                    .for_each(|key| updater.put(key.to_vec(), vec![0u8]).expect("Could not put"));
+                let mut updater = Updater::new(&mut store, EMPTY_TRIE_ROOT);
+                keys1.iter().for_each(|key| {
+                    updater
+                        .put(key.as_ref(), [0u8].as_ref())
+                        .expect("Could not put")
+                });
                 let digest = updater.commit();
                 let mut updater = Updater::new(&mut store, digest);
-                keys2
-                    .iter()
-                    .for_each(|key| updater.put(key.to_vec(), vec![0u8]).expect("Could not put"));
+                keys2.iter().for_each(|key| {
+                    updater
+                        .put(key.as_ref(), [0u8].as_ref())
+                        .expect("Could not put")
+                });
                 updater.commit()
             };
 
@@ -285,9 +323,11 @@ mod tests {
             let mut store = InMemoryStore::new();
 
             let root = {
-                let mut updater = Updater::new(&mut store, EMPTY_DIGEST);
+                let mut updater = Updater::new(&mut store, EMPTY_TRIE_ROOT);
                 for key in &keys {
-                    updater.put(key.to_vec(), vec![0u8]).expect("Could not put");
+                    updater
+                        .put(key.as_ref(), [0u8].as_ref())
+                        .expect("Could not put");
                 }
                 updater.commit()
             };
@@ -298,8 +338,10 @@ mod tests {
                 .collect();
             let actual: Vec<[u8; 10]> = store
                 .leaves_under_prefix(root, &prefix)
-                .map(|leaf| {
-                    leaf.key()
+                .map(|leaf_result| {
+                    leaf_result
+                        .expect("Could not get leaf")
+                        .key()
                         .try_into()
                         .expect("Could not convert trie leaf key to [u8; 10]")
                 })
@@ -318,18 +360,20 @@ mod tests {
             let mut store = InMemoryStore::new();
 
             let root = {
-                let mut updater = Updater::new(&mut store, EMPTY_DIGEST);
+                let mut updater = Updater::new(&mut store, EMPTY_TRIE_ROOT);
                 for key in &keys {
                     let mut prefixed_key = vec![key.len() as u8];
                     prefixed_key.extend(key);
-                    updater.put(prefixed_key, vec![0u8]).expect("Could not put");
+                    updater
+                        .put(&prefixed_key, [0u8].as_ref())
+                        .expect("Could not put");
                 }
                 updater.commit()
             };
 
             let mut retrieved_keys: Vec<Vec<u8>> = store
                 .leaves_under_prefix(root, &[])
-                .map(|leaf| leaf.key()[1..].to_vec())
+                .map(|leaf_result| leaf_result.expect("Could not get leaf").key()[1..].to_vec())
                 .collect();
             retrieved_keys.sort();
             assert_eq!(keys, retrieved_keys)
