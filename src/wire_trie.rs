@@ -203,7 +203,7 @@ impl<'a> Trie<'a> {
             digest_index += branch_count_in_bit_array.count_ones() as u8;
         }
 
-        digest_index += (highest_bits & !(!0u64 << rem.saturating_sub(1))).count_ones() as u8;
+        digest_index += (highest_bits & !(!0u64 << rem)).count_ones() as u8;
         Some(digest_index)
     }
 
