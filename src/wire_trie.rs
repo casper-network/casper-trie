@@ -1,3 +1,5 @@
+use std::array::TryFromSliceError;
+
 pub const DIGEST_LENGTH: usize = 32;
 pub type Digest = [u8; DIGEST_LENGTH];
 pub const EMPTY_TRIE_ROOT: [u8; DIGEST_LENGTH] = [0u8; DIGEST_LENGTH];
@@ -32,13 +34,13 @@ const VERSION: u8 = 0;
 ///     bits of the first byte. These bytes are always in order so we can use binary searches. + A
 ///     list of hashes. Each hash is DIGEST_LENGTH (ie, 32) bytes long. The length of this list is
 ///     the same as the bottom 5 bits of the first byte.
-///   - NODE32_TYPE - this type has: + A bitmask of 32 bytes (256 bits) + A list fo hashes.
+///   - NODE32_TYPE - this type has: + A bitvector of 32 bytes (256 bits) + A list fo hashes.
 ///
 /// Nodes cannot have 0 branches or just 1 branch.
 
 #[derive(PartialEq, Eq)]
 #[repr(u8)]
-pub enum Tag {
+pub enum TrieTag {
     Leaf = 0,
     Node31 = 1,
     Node256 = 2,
@@ -50,8 +52,7 @@ pub struct Trie<'a>(&'a [u8]);
 pub type TrieReadError = std::array::TryFromSliceError;
 
 #[derive(Debug, Clone)]
-// TODO: Don't be pub (crate)
-pub struct Leaf<'a>(pub(crate) &'a [u8]);
+pub struct Leaf<'a>(&'a [u8]);
 
 impl<'a> Leaf<'a> {
     pub(crate) fn new(wire_trie_ref: Trie) -> Leaf {
@@ -105,12 +106,12 @@ impl<'a> Trie<'a> {
 
     /// The tag code for the trie, which are the highest three bits of the first byte.
     /// This means there are 8 possible tags for a trie in total.
-    pub(crate) fn tag(&self) -> Tag {
+    pub(crate) fn tag(&self) -> TrieTag {
         match self.0[0] >> 5 {
-            0 => Tag::Leaf,
-            1 => Tag::Node31,
-            2 => Tag::Node256,
-            _ => Tag::Unknown,
+            0 => TrieTag::Leaf,
+            1 => TrieTag::Node31,
+            2 => TrieTag::Node256,
+            _ => TrieTag::Unknown,
         }
     }
 
@@ -119,17 +120,17 @@ impl<'a> Trie<'a> {
     ///   of bytes in the index.
     /// - If the trie is a radix-256 node, then the index length is always 32 bytes (ie, 256 bits)
     /// - If the trie is not a node this returns 0 bytes.
-    fn search_index_length(&self) -> usize {
+    pub(crate) fn branch_index_length(&self) -> u8 {
         match self.tag() {
-            Tag::Node31 => self.0[0] as usize & 0b11111,
-            Tag::Node256 => 32,
+            TrieTag::Node31 => self.0[0] & 0b11111,
+            TrieTag::Node256 => 32,
             _ => 0,
         }
     }
 
     /// The second byte is the length of the Trie's key or affix in bytes.
     /// This means that keys are limited to having 256 bytes.
-    fn key_or_affix_length(&self) -> usize {
+    pub(crate) fn key_or_affix_length(&self) -> usize {
         self.0[1] as usize
     }
 
@@ -141,18 +142,18 @@ impl<'a> Trie<'a> {
 
     /// The byte indices of branches if the trie is a node. If the trie is not a node then this
     /// should return an empty slice.
-    fn branch_byte_indices(&self) -> &'a [u8] {
+    pub(crate) fn branch_byte_indices(&self) -> &'a [u8] {
         let offset_to_after_affix = 2 + self.key_or_affix_length();
-        let search_index_length = self.search_index_length();
-        &self.0[offset_to_after_affix..offset_to_after_affix + search_index_length]
+        let search_index_length = self.branch_index_length();
+        &self.0[offset_to_after_affix..offset_to_after_affix + search_index_length as usize]
     }
 
     /// The part of the trie before the branch hashes or value.
     /// Contains the tag and either the key + length or the affix, affix length and search index.
     fn envelope(&self) -> &'a [u8] {
         let offset_to_after_affix = 2 + self.key_or_affix_length();
-        let search_index_length = self.search_index_length();
-        &self.0[0..offset_to_after_affix + search_index_length]
+        let search_index_length = self.branch_index_length();
+        &self.0[0..offset_to_after_affix + search_index_length as usize]
     }
 
     /// The hash of the version byte and the envelope (ie, the part of the trie before the branch
@@ -211,15 +212,15 @@ impl<'a> Trie<'a> {
     /// leaf nor a node then this is unspecified.
     fn value_or_branches(&self) -> &'a [u8] {
         let affix_length = self.key_or_affix_length();
-        let search_index_length = self.search_index_length();
-        &self.0[2 + affix_length + search_index_length..]
+        let search_index_length = self.branch_index_length();
+        &self.0[2 + affix_length + search_index_length as usize..]
     }
 
     pub(crate) fn get_nth_digest(
         &self,
         digest_index: u8,
     ) -> Result<TrieLeafOrBranch<'a>, TrieReadError> {
-        if self.tag() == Tag::Leaf {
+        if self.tag() == TrieTag::Leaf {
             return Ok(TrieLeafOrBranch::Leaf(Leaf(&self.0[1..])));
         }
         let branches = self.value_or_branches();
@@ -242,7 +243,7 @@ impl<'a> Trie<'a> {
         // - the 3 highest bits are the branch code
         // - the 5 lowest bits are the branch count if the node has low radix
         let tag_code = self.tag();
-        if tag_code == Tag::Leaf {
+        if tag_code == TrieTag::Leaf {
             let key = self.key_or_affix();
             // If the trie is a leaf but the key doesn't match our key, return KeyNotFound
             if key != search_key {
@@ -286,7 +287,7 @@ impl<'a> Trie<'a> {
         // - the 3 highest bits are the branch code
         // - the 5 lowest bits are the branch count if the node has low radix
         let tag_code = self.tag();
-        if tag_code == Tag::Leaf {
+        if tag_code == TrieTag::Leaf {
             let key = self.key_or_affix();
             // If the trie is a leaf but the key doesn't match our key, return NotFound
             if key != search_key {
@@ -331,7 +332,7 @@ impl<'a> Trie<'a> {
     pub(crate) fn trie_hash(&self) -> Digest {
         let mut hasher = blake3::Hasher::new();
         hasher.update(self.version_byte_and_envelope_hash().as_bytes());
-        if self.tag() == Tag::Leaf {
+        if self.tag() == TrieTag::Leaf {
             // TODO: use Merkle/chunk hash for light clients / bridges
             hasher.update(self.value_or_branches());
         } else {
@@ -340,5 +341,94 @@ impl<'a> Trie<'a> {
             }
         }
         hasher.finalize().into()
+    }
+
+    fn iter_branch_digests(&self) -> impl Iterator<Item = Result<&'a Digest, TryFromSliceError>> {
+        self.value_or_branches()
+            .chunks(DIGEST_LENGTH)
+            .map(<&Digest>::try_from)
+    }
+
+    fn iter_branch_indices(&self) -> TrieBranchIndexIterator<'a> {
+        TrieBranchIndexIterator {
+            branch_indices_or_bitvector: self.branch_byte_indices(),
+            tag: self.tag(),
+            branch_index_length: self.branch_index_length(),
+            index: 0,
+            current_bit_vector: None,
+        }
+    }
+
+    /// Iterate over the index/digest pairs in the trie.
+    pub(crate) fn iter_branches(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            Result<u8, TryFromSliceError>,
+            Result<&'a Digest, TryFromSliceError>,
+        ),
+    > {
+        self.iter_branch_indices().zip(self.iter_branch_digests())
+    }
+}
+
+pub(crate) struct TrieBranchIndexIterator<'a> {
+    branch_indices_or_bitvector: &'a [u8],
+    tag: TrieTag,
+    branch_index_length: u8,
+    index: u8,
+    current_bit_vector: Option<u64>,
+}
+
+impl<'a> Iterator for TrieBranchIndexIterator<'a> {
+    type Item = Result<u8, TryFromSliceError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.tag {
+            TrieTag::Leaf => None,
+            TrieTag::Node31 => {
+                if self.index >= self.branch_index_length {
+                    None
+                } else {
+                    let branch_index = self.branch_indices_or_bitvector[self.index as usize];
+                    self.index += 1;
+                    Some(Ok(branch_index))
+                }
+            }
+            TrieTag::Node256 => {
+                let current_bit_vector = loop {
+                    if self.index >= 4 {
+                        return None;
+                    }
+                    let current_bit_vector = match self.current_bit_vector {
+                        Some(current_bit_vector) => current_bit_vector,
+                        None => {
+                            let bit_vector_start_index = (self.index * 8) as usize;
+                            let current_bit_vector_result: Result<[u8; 8], TryFromSliceError> =
+                                self.branch_indices_or_bitvector
+                                    [bit_vector_start_index..bit_vector_start_index + 8]
+                                    .try_into();
+                            match current_bit_vector_result {
+                                Ok(current_bit_vector) => u64::from_le_bytes(current_bit_vector),
+                                Err(err) => {
+                                    self.index = 4;
+                                    return Some(Err(err));
+                                }
+                            }
+                        }
+                    };
+                    if current_bit_vector != 0 {
+                        break current_bit_vector;
+                    } else {
+                        self.index += 1;
+                        self.current_bit_vector = None;
+                    }
+                };
+                let j = current_bit_vector.trailing_zeros();
+                self.current_bit_vector = Some(current_bit_vector - (1 << j));
+                Some(Ok(j as u8 + self.index * 64))
+            }
+            TrieTag::Unknown => None,
+        }
     }
 }

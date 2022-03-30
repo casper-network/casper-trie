@@ -6,7 +6,7 @@ pub mod updater;
 
 pub use crate::store::backends::in_memory::InMemoryStore;
 use crate::{
-    wire_trie::{Leaf, Tag, Trie, TrieLeafOrBranch, TrieReadError, EMPTY_TRIE_ROOT},
+    wire_trie::{Leaf, Trie, TrieLeafOrBranch, TrieReadError, TrieTag, EMPTY_TRIE_ROOT},
     Digest,
 };
 
@@ -95,7 +95,7 @@ where
                     }
                 };
 
-                if trie.tag() == Tag::Leaf {
+                if trie.tag() == TrieTag::Leaf {
                     self.initialized = true;
                     if trie.key_or_affix().starts_with(&self.prefix) {
                         return Some(Ok(Leaf::new(trie)));

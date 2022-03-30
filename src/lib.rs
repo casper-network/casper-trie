@@ -10,7 +10,7 @@ mod tests {
             updater::{Node, OwnedTrie, Updater, UpdatingTrie, MAX_KEY_BYTES_LEN},
             InMemoryStore, TrieStore,
         },
-        wire_trie::{Tag, EMPTY_TRIE_ROOT},
+        wire_trie::{TrieTag, EMPTY_TRIE_ROOT},
     };
 
     fn node_with_one_branch(branch_idx: u8) -> Node {
@@ -23,7 +23,7 @@ mod tests {
     fn trie_bytes_from_node_with_one_branch() {
         let node = node_with_one_branch(0);
         let trie_bytes = OwnedTrie::try_from(&node).expect("should convert to trie bytes");
-        assert_eq!(trie_bytes.as_ref()[0] >> 5, Tag::Node31 as u8);
+        assert_eq!(trie_bytes.as_ref()[0] >> 5, TrieTag::Node31 as u8);
         assert_eq!(trie_bytes.as_ref()[0] & 0b11111, 1);
     }
 

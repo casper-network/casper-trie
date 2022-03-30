@@ -1,6 +1,6 @@
 use crate::{
     store::{backends::in_memory::InMemoryStore, TrieStore},
-    wire_trie::{Tag, TrieLeafOrBranch, TrieReadError, EMPTY_TRIE_ROOT},
+    wire_trie::{TrieLeafOrBranch, TrieReadError, TrieTag, EMPTY_TRIE_ROOT},
     Digest, Trie, DIGEST_LENGTH,
 };
 
@@ -74,7 +74,7 @@ impl OwnedLeaf {
 impl From<OwnedLeaf> for OwnedTrie {
     fn from(leaf: OwnedLeaf) -> Self {
         let mut data = Vec::with_capacity(1 + leaf.0.len());
-        data.push(Tag::Leaf as u8);
+        data.push(TrieTag::Leaf as u8);
         data.extend(leaf.0);
         OwnedTrie(data)
     }
@@ -225,62 +225,23 @@ impl TryFrom<Trie<'_>> for UpdatingTrie {
     type Error = TrieToUpdatingTrieConversionError;
 
     fn try_from(trie: Trie) -> Result<Self, Self::Error> {
-        let data = trie.raw_bytes();
-
-        // TODO: Use accessors
         // The 3 highest significant bits are the tag code, the lower 5 bits are the branch count.
-        let tag_code_and_branch_count = data[0];
         let tag = trie.tag();
-        let data = &data[1..];
-
-        // Get the affix.
-        let affix_length = match tag {
-            Tag::Leaf => {
-                return Ok(UpdatingTrie::leaf(OwnedLeaf(data.to_vec())));
-            }
-            Tag::Node31 | Tag::Node256 => data[0] as usize,
-            _ => return Err(TrieToUpdatingTrieConversionError::InvalidTrieTagCode),
-        };
-        let affix = data[1..affix_length + 1].to_vec();
-        let data = &data[affix_length + 1..];
+        if tag == TrieTag::Leaf {
+            return Ok(UpdatingTrie::leaf(OwnedLeaf(
+                trie.raw_bytes()[1..].to_vec(),
+            )));
+        }
 
         let mut branches = empty_branches();
-        let branch_count = match tag {
-            Tag::Node31 => {
-                // Branch count is the lower 5 bits of the first byte (the higher bits are the tag)
-                let branch_count = (tag_code_and_branch_count & 0b11111) as usize;
-                for idx in 0..branch_count {
-                    let branch_index = data[idx] as usize;
-                    branches[branch_index] = UpdatingTrie::digest(
-                        data[branch_count + idx * DIGEST_LENGTH
-                            ..branch_count + (idx + 1) * DIGEST_LENGTH]
-                            .try_into()?,
-                    );
-                }
-                branch_count as u8
-            }
-            Tag::Node256 => {
-                let mut idx = 0;
-                for i in 0..4usize {
-                    let mut branch_index: u64 =
-                        u64::from_le_bytes(data[i * 8..i * 8 + 8].try_into()?);
-                    while branch_index != 0 {
-                        let j = branch_index.trailing_zeros();
-                        branches[i * 64 + j as usize] = UpdatingTrie::digest(
-                            data[32 + idx * DIGEST_LENGTH..32 + (idx + 1) * DIGEST_LENGTH]
-                                .try_into()?,
-                        );
-                        branch_index ^= 1 << j;
-                        idx += 1;
-                    }
-                }
-                idx as u8
-            }
-            _ => unreachable!(),
-        };
+        let mut branch_count = 0;
+        for (branch_index, branch) in trie.iter_branches() {
+            branches[branch_index? as usize] = UpdatingTrie::digest(*branch?);
+            branch_count += 1;
+        }
 
         Ok(UpdatingTrie::node(Node {
-            affix,
+            affix: trie.key_or_affix().to_vec(),
             branch_count,
             branches,
         }))
@@ -330,7 +291,7 @@ impl TryFrom<&Node> for OwnedTrie {
                     + branch_count        // branches search index
                     + 32 * branch_count, // hashes of each branch
             );
-            data.push((Tag::Node31 as u8) << 5 | branch_count as u8);
+            data.push((TrieTag::Node31 as u8) << 5 | branch_count as u8);
             data.push(affix.len() as u8);
             data.extend(affix);
             let mut branch_bytes = Vec::<u8>::with_capacity(32 * branch_count);
@@ -358,7 +319,7 @@ impl TryFrom<&Node> for OwnedTrie {
                     + 32                 // branches bit-array
                     + 32 * branch_count, // hashes of each branch
             );
-            data.push((Tag::Node256 as u8) << 5);
+            data.push((TrieTag::Node256 as u8) << 5);
             data.push(affix.len() as u8);
             data.extend(affix);
             let mut branch_bytes: Vec<u8> = vec![];
