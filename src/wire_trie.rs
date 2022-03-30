@@ -195,8 +195,6 @@ impl<'a> Trie<'a> {
         }
 
         let mut digest_index: u8 = 0;
-        // TODO: unravel these loops / avx popcount?
-        // https://github.com/WojciechMula/sse-popcount/blob/master/popcnt-avx512-vpopcnt.cpp https://arxiv.org/abs/1611.07612
         for i in 0..quot {
             // Convert blocks of 32 bytes into u64s, call popcnt to get how many branches in this
             // bit-array part
