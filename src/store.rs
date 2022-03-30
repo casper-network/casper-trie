@@ -62,8 +62,8 @@ where
                 let trie = match self.store.get_trie(&current_lookup_digest) {
                     Ok(Some(trie)) => trie,
                     Ok(None) => {
-                        // Could not look up digest. The trie-store may be corrupted.
-                        // Stop iterating.
+                        // Could not look up digest. The digest may not exist or trie-store may be
+                        // corrupted. Stop iterating.
                         self.initialized = true;
                         return Some(Err(TrieLeavesUnderPrefixIteratorError::DigestNotFound(
                             Box::new(current_lookup_digest),
