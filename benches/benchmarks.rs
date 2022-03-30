@@ -14,9 +14,9 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         b.iter(|| {
             let mut store = InMemoryStore::new();
             let mut updater = Updater::new(&mut store, EMPTY_TRIE_ROOT);
-            let mut x = a;
+            let mut x: u128 = a;
             for _ in 0..10_000 {
-                x = (x * a) % m;
+                x = x.saturating_add(a) % m;
                 updater
                     .put((x as u64).to_le_bytes().as_ref(), &[])
                     .expect("could not put");
