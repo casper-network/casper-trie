@@ -348,19 +348,13 @@ impl<'a> Trie<'a> {
             .map(<&Digest>::try_from)
     }
 
-    fn iter_branch_indices(&self) -> TrieBranchIndexIterator<'a> {
-        TrieBranchIndexIterator {
-            branch_indices_or_bitvector: self.branch_byte_indices(),
-            tag: self.tag(),
-            branch_index_length: self.branch_index_length(),
-            index: 0,
-            current_bit_vector: None,
-        }
+    fn iter_branch_indices(&'a self) -> TrieBranchIndexIterator<'a> {
+        TrieBranchIndexIterator::new(self)
     }
 
     /// Iterate over the index/digest pairs in the trie.
     pub(crate) fn iter_branches(
-        &self,
+        &'a self,
     ) -> impl Iterator<
         Item = (
             Result<u8, TryFromSliceError>,
@@ -377,6 +371,18 @@ pub(crate) struct TrieBranchIndexIterator<'a> {
     branch_index_length: u8,
     index: u8,
     current_bit_vector: Option<u64>,
+}
+
+impl<'a> TrieBranchIndexIterator<'a> {
+    fn new(trie: &'a Trie) -> Self {
+        Self {
+            branch_indices_or_bitvector: trie.branch_byte_indices(),
+            tag: trie.tag(),
+            branch_index_length: trie.branch_index_length(),
+            index: 0,
+            current_bit_vector: None,
+        }
+    }
 }
 
 impl<'a> Iterator for TrieBranchIndexIterator<'a> {
