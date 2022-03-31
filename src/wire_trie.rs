@@ -365,22 +365,26 @@ impl<'a> Trie<'a> {
     }
 }
 
-pub(crate) struct TrieBranchIndexIterator<'a> {
-    branch_indices_or_bitvector: &'a [u8],
-    tag: TrieTag,
-    branch_index_length: u8,
-    index: u8,
-    current_bit_vector: Option<u64>,
+pub(crate) enum TrieBranchIndexIterator<'a> {
+    NotIterating, // TODO: get rid of this enum if we get rid of the Leaf/Unknown tags
+    Node31(std::slice::Iter<'a, u8>),
+    Node256 {
+        bitvector: &'a [u8],
+        index: u8,
+        current_bit_vector_opt: Option<u64>,
+    },
 }
 
 impl<'a> TrieBranchIndexIterator<'a> {
     fn new(trie: &'a Trie) -> Self {
-        Self {
-            branch_indices_or_bitvector: trie.branch_byte_indices(),
-            tag: trie.tag(),
-            branch_index_length: trie.branch_index_length(),
-            index: 0,
-            current_bit_vector: None,
+        match trie.tag() {
+            TrieTag::Leaf | TrieTag::Unknown => Self::NotIterating,
+            TrieTag::Node31 => Self::Node31(trie.branch_byte_indices().iter()),
+            TrieTag::Node256 => Self::Node256 {
+                bitvector: trie.branch_byte_indices(),
+                index: 0,
+                current_bit_vector_opt: None,
+            },
         }
     }
 }
@@ -389,34 +393,29 @@ impl<'a> Iterator for TrieBranchIndexIterator<'a> {
     type Item = Result<u8, TryFromSliceError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.tag {
-            TrieTag::Leaf => None,
-            TrieTag::Node31 => {
-                if self.index >= self.branch_index_length {
-                    None
-                } else {
-                    let branch_index = self.branch_indices_or_bitvector[self.index as usize];
-                    self.index += 1;
-                    Some(Ok(branch_index))
-                }
-            }
-            TrieTag::Node256 => {
+        match self {
+            TrieBranchIndexIterator::NotIterating => None,
+            TrieBranchIndexIterator::Node31(iterator) => iterator.next().cloned().map(Ok),
+            TrieBranchIndexIterator::Node256 {
+                bitvector,
+                index,
+                current_bit_vector_opt,
+            } => {
                 let current_bit_vector = loop {
-                    if self.index >= 4 {
+                    if *index >= 4 {
                         return None;
                     }
-                    let current_bit_vector = match self.current_bit_vector {
-                        Some(current_bit_vector) => current_bit_vector,
+                    let current_bit_vector = match current_bit_vector_opt {
+                        Some(current_bit_vector) => *current_bit_vector,
                         None => {
-                            let bit_vector_start_index = (self.index * 8) as usize;
+                            let bit_vector_start_index = (*index * 8) as usize;
                             let current_bit_vector_result: Result<[u8; 8], TryFromSliceError> =
-                                self.branch_indices_or_bitvector
-                                    [bit_vector_start_index..bit_vector_start_index + 8]
+                                bitvector[bit_vector_start_index..bit_vector_start_index + 8]
                                     .try_into();
                             match current_bit_vector_result {
                                 Ok(current_bit_vector) => u64::from_le_bytes(current_bit_vector),
                                 Err(err) => {
-                                    self.index = 4;
+                                    *index = 4;
                                     return Some(Err(err));
                                 }
                             }
@@ -425,15 +424,14 @@ impl<'a> Iterator for TrieBranchIndexIterator<'a> {
                     if current_bit_vector != 0 {
                         break current_bit_vector;
                     } else {
-                        self.index += 1;
-                        self.current_bit_vector = None;
+                        *index += 1;
+                        *current_bit_vector_opt = None;
                     }
                 };
                 let j = current_bit_vector.trailing_zeros();
-                self.current_bit_vector = Some(current_bit_vector - (1 << j));
-                Some(Ok(j as u8 + self.index * 64))
+                *current_bit_vector_opt = Some(current_bit_vector - (1 << j));
+                Some(Ok(j as u8 + *index * 64))
             }
-            TrieTag::Unknown => None,
         }
     }
 }
