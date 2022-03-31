@@ -1,4 +1,5 @@
-//! A wire-format for a Merkle Patricia trie. This is a new-type around raw bytes. The raw bytes have two components.
+//! A wire-format for a Merkle Patricia trie. This is a new-type around raw bytes. The raw bytes
+//! have two components.
 //!
 //! The two components are:
 //!
@@ -14,16 +15,18 @@
 //!     - 2: The trie is a radix-256 node.
 //!   - A branch count encoded as the least significant 5 bits when this is a Node31
 //! - Byte 1: Key or affix length.
-//! - Bytes 2 to at most 256+2: The key or affix. These bytes are for a key if the highest three bits
-//!   in byte 1 were LEAF_TAG (ie, 0). Otherwise it is an affix, because the trie is a node with
-//!   branches.
+//! - Bytes 2 to at most 256+2: The key or affix. These bytes are for a key if the highest three
+//!   bits in byte 1 were LEAF_TAG (ie, 0). Otherwise it is an affix, because the trie is a node
+//!   with branches.
 //! - Additional bytes: Depends on the tag
-//!   - Leaf: these are the values of the leaf, represented as a blob of bytes with no prefixed length.
-//!   - Node31: this type has
-//!     - Search index bytes, with length indicated by the bottom 5 bits of the first byte. These bytes are always in order so we can use binary searches.
-//!     - A list of hashes. Each hash is DIGEST_LENGTH (ie, 32) bytes long. The length of this
-//!       list is the same as the bottom 5 bits of the first byte.
-//!   - NODE32_TYPE: this type has
+//!   - Leaf: these are the values of the leaf, represented as a blob of bytes with no prefixed
+//!     length.
+//!   - Node31: this sort of node has
+//!     - Search index bytes, with length indicated by the bottom 5 bits of the first byte. These
+//!       bytes are always in order so we can use binary searches.
+//!     - A list of hashes. Each hash is DIGEST_LENGTH (ie, 32) bytes long. The length of this list
+//!       is the same as the bottom 5 bits of the first byte.
+//!   - Node256: this sort of node has
 //!     - A bitvector of 32 bytes (256 bits)
 //!     - A list of hashes.
 //!
