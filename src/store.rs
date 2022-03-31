@@ -1,93 +1,108 @@
 mod fast_sync;
 mod garbage_collect;
 
-pub(crate) mod updater;
+pub mod backends;
+pub mod updater;
+
+pub use crate::store::backends::in_memory::InMemoryStore;
 use crate::{
-    store::updater::{OwnedTrie, Updater, UpdatingTrie},
-    wire_trie::{
-        TrieRead, TrieReadWithProof, WireTrieLeafRef, EMPTY_DIGEST, LEAF_TAG, NODE256_TAG,
-        NODE31_TAG,
-    },
-    Digest, WireTrieRef,
+    wire_trie::{Leaf, Trie, TrieLeafOrBranch, TrieReadError, TrieTag, EMPTY_TRIE_ROOT},
+    Digest,
 };
-use std::collections::HashMap;
 
 // TODO: wrap rocksdb - talk to Dan
 
 // TODO: struct Ref(u64)
 // TODO struct Store { roots: HashMap<Digest, Ref>, tries: HashMap<Ref, Vec<u8>> }
 
-#[derive(Debug)]
-// TODO: Make trait, move to test
-pub(crate) struct InMemoryArchivalStore(HashMap<Digest, Vec<u8>>);
+pub trait TrieStore: Sized {
+    type Error: std::error::Error;
+    fn get_trie(&self, digest: &Digest) -> Result<Option<Trie>, Self::Error>;
 
-impl InMemoryArchivalStore {
-    // TODO: Public interface: get and put_many
-
-    pub(crate) fn new() -> InMemoryArchivalStore {
-        InMemoryArchivalStore(HashMap::new())
-    }
-
-    fn get_trie_ref(&self, digest: &Digest) -> Option<WireTrieRef> {
-        self.0
-            .get(digest)
-            .map(|trie_bytes| WireTrieRef::new(&*trie_bytes))
-    }
-
-    fn put_trie(&mut self, digest: Digest, owned_trie: OwnedTrie) {
-        self.0.insert(digest, owned_trie.into());
-    }
-
-    // TODO: Bulk trie retrieve  fn bulk_trie_download(root: Digest, prefixes: Vec<Vec<u8>>,
-    // missing_descendants: Vec<Digest>, bloom_filter: BloomFilter) ->
-    // Result<Vec<WireTrie>,DigestNotUnderPrefix> TODO: Read with proof
-    // TODO: TODO rethink find_missing_descendants
-
-    pub fn iterate_leaves_under_prefix(
+    fn leaves_under_prefix(
         &self,
         root: Digest,
         prefix: Vec<u8>,
-    ) -> TrieLeavesUnderPrefixIterator {
-        let node_stack = if prefix.is_empty() {
-            vec![(root.clone(), 0)]
-        } else {
-            vec![]
-        };
-        TrieLeavesUnderPrefixIterator {
+    ) -> TrieLeavesUnderPrefixIterator<Self> {
+        TrieLeavesUnderPrefixIterator::new(self, root, prefix)
+    }
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum TrieLeavesUnderPrefixIteratorError<S>
+where
+    S: TrieStore,
+{
+    #[error("Digest not found: {0:?}")]
+    DigestNotFound(Box<Digest>),
+
+    #[error(transparent)]
+    TrieStoreError(<S as TrieStore>::Error),
+
+    #[error(transparent)]
+    TrieReadError(#[from] TrieReadError),
+}
+
+pub struct TrieLeavesUnderPrefixIterator<'a, S> {
+    root: Digest,
+    store: &'a S,
+    prefix: Vec<u8>,
+    initialized: bool,
+    node_stack: Vec<(Digest, u8)>,
+}
+
+impl<'a, S> TrieLeavesUnderPrefixIterator<'a, S> {
+    pub fn new(store: &'a S, root: Digest, prefix: Vec<u8>) -> Self {
+        Self {
             root,
+            store,
             prefix,
-            store: &self,
-            node_stack,
+            initialized: false,
+            node_stack: Vec::new(),
         }
     }
 }
 
-pub struct TrieLeavesUnderPrefixIterator<'a> {
-    root: Digest,
-    prefix: Vec<u8>,
-    store: &'a InMemoryArchivalStore,
-    node_stack: Vec<(Digest, u8)>,
-}
-
-impl<'a> Iterator for TrieLeavesUnderPrefixIterator<'a> {
-    type Item = WireTrieLeafRef<'a>;
+impl<'a, S> Iterator for TrieLeavesUnderPrefixIterator<'a, S>
+where
+    S: TrieStore,
+{
+    type Item = Result<Leaf<'a>, TrieLeavesUnderPrefixIteratorError<S>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if !self.prefix.is_empty() {
-            self.node_stack.clear();
-            let mut current_lookup_digest = self.root.clone();
+        if !self.initialized {
+            if self.root == EMPTY_TRIE_ROOT {
+                self.initialized = true;
+                return None;
+            }
+
+            let mut current_lookup_digest = self.root;
             let mut prefix_bytes_read: u8 = 0;
             loop {
-                let trie = match self.store.get_trie_ref(&current_lookup_digest) {
-                    Some(trie) => trie,
-                    None => {
-                        // Could not look up digest. The trie-store is likely corrupted.
-                        // Stop iterating.
-                        self.prefix.clear();
-                        self.node_stack.clear();
-                        return None;
+                let trie = match self.store.get_trie(&current_lookup_digest) {
+                    Ok(Some(trie)) => trie,
+                    Ok(None) => {
+                        // Could not look up digest. The digest may not exist or trie-store may be
+                        // corrupted. Stop iterating.
+                        self.initialized = true;
+                        return Some(Err(TrieLeavesUnderPrefixIteratorError::DigestNotFound(
+                            Box::new(current_lookup_digest),
+                        )));
+                    }
+                    Err(err) => {
+                        self.initialized = true;
+                        return Some(Err(TrieLeavesUnderPrefixIteratorError::TrieStoreError(err)));
                     }
                 };
+
+                if trie.tag() == TrieTag::Leaf {
+                    self.initialized = true;
+                    if trie.key_or_affix().starts_with(&self.prefix) {
+                        return Some(Ok(Leaf::new(trie)));
+                    } else {
+                        return None;
+                    }
+                }
 
                 let common_prefix_count = trie
                     .key_or_affix()
@@ -97,62 +112,50 @@ impl<'a> Iterator for TrieLeavesUnderPrefixIterator<'a> {
                     .count();
 
                 if prefix_bytes_read as usize + common_prefix_count == self.prefix.len() {
-                    match trie.tag() {
-                        // The only node beyond our prefix is a leaf.
-                        // We'll return this and stop the iterator.
-                        LEAF_TAG => {
-                            self.prefix.clear();
-                            self.node_stack.clear();
-                            return Some(WireTrieLeafRef::new(&trie.raw_bytes()[1..]));
-                        }
-                        // We have hit a node. Start iterating through its branches.
-                        NODE31_TAG | NODE256_TAG => break,
-                        // This is an error condition, stop iterating.
-                        _ => {
-                            self.prefix.clear();
-                            self.node_stack.clear();
-                            return None;
-                        }
-                    }
+                    break;
                 }
-                if let Ok(TrieReadWithProof::DigestWithProof {
-                    digest,
-                    key_bytes_read,
-                    ..
-                }) = trie.read_using_search_key(&self.prefix, prefix_bytes_read)
+                if let Ok(TrieLeafOrBranch::Branch(digest)) =
+                    trie.read_using_search_key(&self.prefix, &mut prefix_bytes_read)
                 {
-                    prefix_bytes_read = key_bytes_read;
-                    current_lookup_digest = digest.clone();
+                    current_lookup_digest = *digest;
                 } else {
-                    self.prefix.clear();
-                    self.node_stack.clear();
+                    self.initialized = true;
                     return None;
                 }
             }
-            self.prefix.clear();
+            self.initialized = true;
             self.node_stack.push((current_lookup_digest, 0))
         }
 
         while let Some((node_digest, branch_idx)) = self.node_stack.pop() {
-            let trie = match self.store.get_trie_ref(&node_digest) {
-                Some(trie) => trie,
-                None => {
+            let trie = match self.store.get_trie(&node_digest) {
+                Ok(Some(trie)) => trie,
+                Ok(None) => {
                     self.node_stack.clear();
-                    return None;
+                    return Some(Err(TrieLeavesUnderPrefixIteratorError::DigestNotFound(
+                        Box::new(node_digest),
+                    )));
+                }
+                Err(err) => {
+                    self.node_stack.clear();
+                    return Some(Err(TrieLeavesUnderPrefixIteratorError::TrieStoreError(err)));
                 }
             };
             match trie.get_nth_digest(branch_idx) {
-                Ok(TrieRead::NotFound) => continue,
-                Ok(TrieRead::TrieLeaf(leaf)) => {
-                    return Some(leaf);
+                Ok(TrieLeafOrBranch::Leaf(leaf)) => {
+                    return Some(Ok(leaf));
                 }
-                Ok(TrieRead::DigestReadFromNode(new_digest)) => {
+                Ok(TrieLeafOrBranch::Branch(new_digest)) => {
                     self.node_stack.push((node_digest, branch_idx + 1));
-                    self.node_stack.push((new_digest.clone(), 0));
+                    self.node_stack.push((*new_digest, 0));
                 }
-                Err(_) => {
+                Ok(TrieLeafOrBranch::IndexOutOfRange) => continue,
+                Ok(TrieLeafOrBranch::KeyNotFound) => {
+                    unreachable!("get_nth_digest should never return KeyNotFound")
+                }
+                Err(err) => {
                     self.node_stack.clear();
-                    return None;
+                    return Some(Err(err.into()));
                 }
             }
         }
