@@ -81,7 +81,7 @@ pub(crate) enum TrieLeafOrBranch<'a> {
 }
 
 pub(crate) struct Proof<'a> {
-    version_byte_and_envelop_hash: Digest,
+    version_byte_and_envelope_hash: Digest,
     branches_before: &'a [u8],
     branches_after: &'a [u8],
 }
@@ -322,7 +322,7 @@ impl<'a> Trie<'a> {
         Ok(TrieReadWithProof::BranchWithProof {
             digest,
             proof: Proof {
-                version_byte_and_envelop_hash: self.version_byte_and_envelope_hash().into(),
+                version_byte_and_envelope_hash: self.version_byte_and_envelope_hash().into(),
                 branches_before: &branches[..digest_idx * DIGEST_LENGTH],
                 branches_after: &branches[(digest_idx + 1) * DIGEST_LENGTH..],
             },
