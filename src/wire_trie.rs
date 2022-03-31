@@ -256,10 +256,7 @@ impl<'a> Trie<'a> {
 
         // If the affix is not prefix of the keys bytes remaining, then return KeyNotFound
         if search_key.len() <= *key_bytes_read as usize + affix.len()
-            || !affix
-                .iter()
-                .zip(&search_key[*key_bytes_read as usize..])
-                .all(|(affix_byte, key_byte)| affix_byte == key_byte)
+            || !search_key[*key_bytes_read as usize..].starts_with(affix)
         {
             return Ok(TrieLeafOrBranch::KeyNotFound);
         }
