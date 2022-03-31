@@ -1,3 +1,34 @@
+//! A wire-format for a Merkle Patricia trie. This is a new-type around raw bytes. The raw bytes have two components.
+//!
+//! The two components are:
+//!
+//! 1. An _envelope_
+//! 2. A _value_ or list of cryptographic hashes representing branches.
+//!
+//! The envelope has the following byte structure:
+//!
+//! - Byte 0:
+//!   - A tag encoded as the most significant 3 bits.
+//!     - 0: The trie is a leaf.
+//!     - 1: The trie is a radix-31 node.
+//!     - 2: The trie is a radix-256 node.
+//!   - A branch count encoded as the least significant 5 bits when this is a Node31
+//! - Byte 1: Key or affix length.
+//! - Bytes 2 to at most 256+2: The key or affix. These bytes are for a key if the highest three bits
+//!   in byte 1 were LEAF_TAG (ie, 0). Otherwise it is an affix, because the trie is a node with
+//!   branches.
+//! - Additional bytes: Depends on the tag
+//!   - Leaf: these are the values of the leaf, represented as a blob of bytes with no prefixed length.
+//!   - Node31: this type has
+//!     - Search index bytes, with length indicated by the bottom 5 bits of the first byte. These bytes are always in order so we can use binary searches.
+//!     - A list of hashes. Each hash is DIGEST_LENGTH (ie, 32) bytes long. The length of this
+//!       list is the same as the bottom 5 bits of the first byte.
+//!   - NODE32_TYPE: this type has
+//!     - A bitvector of 32 bytes (256 bits)
+//!     - A list of hashes.
+//!
+//! Nodes cannot have 0 branches or just 1 branch.
+
 use std::array::TryFromSliceError;
 
 pub const DIGEST_LENGTH: usize = 32;
@@ -5,38 +36,6 @@ pub type Digest = [u8; DIGEST_LENGTH];
 pub const EMPTY_TRIE_ROOT: [u8; DIGEST_LENGTH] = [0u8; DIGEST_LENGTH];
 
 const VERSION: u8 = 0;
-
-/// A wire-format for a Merkle Patricia trie. This is a new-type around raw bytes. The raw bytes
-/// have two components.
-///
-/// The two components are:
-/// 1. An *envelope*
-/// 2. A *value* or list of cryptographic hashes representing branches.
-///
-/// The envelope has the following byte structure:
-///
-/// Byte 1:
-///   - A tag encoded as the most significant 3 bits
-///   - A branch count encoded as the least significant 5 bits when this is a NODE31_TYPE
-///
-/// Byte 2: Key or affix length.
-///
-/// Bytes 3 to at most 256+3: The key or affix. These bytes are for a key if the highest three
-/// bits in byte 1 were LEAF_TAG (ie, 0). Otherwise it is an affix, because the trie is a node with
-/// branches.
-///   - Having a keyspace that supports keys 256 bytes in length is helpful for variable length
-///     keys. One might have entities which have a sub-map associated with them. This is supported
-///     provided that no key is a prefix of another key.
-/// The next bytes depend on the type.
-///
-///   - LEAF_TYPE - these are the values of the leaf, represented as a blob of bytes
-///   - NODE31_TYPE - this type has: + Search index bytes, with length indicated by the bottom 5
-///     bits of the first byte. These bytes are always in order so we can use binary searches. + A
-///     list of hashes. Each hash is DIGEST_LENGTH (ie, 32) bytes long. The length of this list is
-///     the same as the bottom 5 bits of the first byte.
-///   - NODE32_TYPE - this type has: + A bitvector of 32 bytes (256 bits) + A list fo hashes.
-///
-/// Nodes cannot have 0 branches or just 1 branch.
 
 #[derive(PartialEq, Eq)]
 #[repr(u8)]
