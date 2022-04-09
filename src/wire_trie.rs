@@ -33,6 +33,8 @@
 //! Nodes cannot have 0 branches or just 1 branch.
 
 use std::array::TryFromSliceError;
+use std::iter::Map;
+use std::slice::Chunks;
 
 pub const DIGEST_LENGTH: usize = 32;
 pub type Digest = [u8; DIGEST_LENGTH];
@@ -68,7 +70,7 @@ impl<'a> Leaf<'a> {
         &data[1..1 + data[0] as usize]
     }
 
-    fn value(&self) -> &[u8] {
+    pub(crate) fn value(&self) -> &[u8] {
         let data = self.0;
         &data[1 + data[0] as usize..]
     }
@@ -97,12 +99,15 @@ pub(crate) enum TrieReadWithProof<'a> {
     NotFound,
 }
 
+pub(crate) type BranchIterator<'a> =
+    Map<Chunks<'a, u8>, fn(&'a [u8]) -> Result<&'a Digest, TryFromSliceError>>;
+
 impl<'a> Trie<'a> {
     pub(crate) fn new(trie_bytes: &[u8]) -> Trie {
         Trie(trie_bytes)
     }
 
-    pub(crate) fn raw_bytes(&self) -> &'a [u8] {
+    pub(crate) fn as_bytes(&self) -> &'a [u8] {
         self.0
     }
 
@@ -115,6 +120,10 @@ impl<'a> Trie<'a> {
             2 => TrieTag::Node256,
             _ => TrieTag::Unknown,
         }
+    }
+
+    fn is_leaf(&self) -> bool {
+        self.tag() == TrieTag::Leaf
     }
 
     /// Get the length in bytes of the branch index using the tag.
@@ -210,9 +219,20 @@ impl<'a> Trie<'a> {
         Some(digest_index)
     }
 
-    /// The value of a trie leaf, or the Digest branches of a trie node. If the trie is neither a
-    /// leaf nor a node then this is unspecified.
-    fn value_or_branches(&self) -> &'a [u8] {
+    /// The value of the trie if it is a leaf. If the trie is not a leaf then this should return an empty slice.
+    fn value(&self) -> &'a [u8] {
+        if !self.is_leaf() {
+            return &[];
+        }
+        let affix_length = self.key_or_affix_length();
+        &self.0[2 + affix_length..]
+    }
+
+    /// The branch hashes of the trie if it is a node. If the trie is not a node then this should return an empty slice.
+    fn branches(&self) -> &'a [u8] {
+        if self.is_leaf() {
+            return &[];
+        }
         let affix_length = self.key_or_affix_length();
         let search_index_length = self.branch_index_length();
         &self.0[2 + affix_length + search_index_length as usize..]
@@ -225,7 +245,7 @@ impl<'a> Trie<'a> {
         if self.tag() == TrieTag::Leaf {
             return Ok(TrieLeafOrBranch::Leaf(Leaf(&self.0[1..])));
         }
-        let branches = self.value_or_branches();
+        let branches = self.branches();
         let start_idx = digest_index as usize * DIGEST_LENGTH;
         if start_idx + DIGEST_LENGTH > branches.len() {
             Ok(TrieLeafOrBranch::IndexOutOfRange)
@@ -269,7 +289,7 @@ impl<'a> Trie<'a> {
             None => return Ok(TrieLeafOrBranch::KeyNotFound),
             Some(digest_idx) => digest_idx as usize,
         };
-        let branches = self.value_or_branches();
+        let branches = self.branches();
         let digest =
             branches[digest_idx * DIGEST_LENGTH..(digest_idx + 1) * DIGEST_LENGTH].try_into()?;
 
@@ -313,7 +333,7 @@ impl<'a> Trie<'a> {
             None => return Ok(TrieReadWithProof::NotFound),
             Some(digest_idx) => digest_idx as usize,
         };
-        let branches = self.value_or_branches();
+        let branches = self.branches();
         let digest =
             branches[digest_idx * DIGEST_LENGTH..(digest_idx + 1) * DIGEST_LENGTH].try_into()?;
 
@@ -333,17 +353,17 @@ impl<'a> Trie<'a> {
         hasher.update(self.version_byte_and_envelope_hash().as_bytes());
         if self.tag() == TrieTag::Leaf {
             // TODO: use Merkle/chunk hash for light clients / bridges
-            hasher.update(self.value_or_branches());
+            hasher.update(self.value());
         } else {
-            for digest in self.value_or_branches().chunks_exact(32) {
+            for digest in self.branches().chunks_exact(32) {
                 hasher.update(digest);
             }
         }
         hasher.finalize().into()
     }
 
-    fn iter_branch_digests(&self) -> impl Iterator<Item = Result<&'a Digest, TryFromSliceError>> {
-        self.value_or_branches()
+    pub(crate) fn iter_branch_digests(&self) -> BranchIterator<'a> {
+        self.branches()
             .chunks(DIGEST_LENGTH)
             .map(<&Digest>::try_from)
     }
