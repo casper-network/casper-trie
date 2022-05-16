@@ -10,7 +10,7 @@ blake3 = "1.3.0"
 thiserror = "1.0.30"
 
 [dev-dependencies]
-criterion = {version = "0.3", features = ["html_reports"]}
+criterion = {git = "https://github.com/crepererum/criterion.rs.git", rev = "def185d02186622dafaea547804f717228e35547", features = ["html_reports"]}
 proptest = "1.0.0"
 test-strategy = "0.1.2"
 
