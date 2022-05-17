@@ -1,7 +1,9 @@
 use std::{collections::HashMap, convert::Infallible};
 
-use crate::store::{TransactionError, TrieTransactional, TrieWriter};
-use crate::{store::TrieReader, Digest, Trie};
+use crate::{
+    store::{TransactionError, TrieReader, TrieTransactional, TrieWriter},
+    Digest, Trie,
+};
 
 #[derive(Debug)]
 pub struct InMemoryStore(HashMap<Digest, Vec<u8>>);

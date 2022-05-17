@@ -291,6 +291,20 @@ mod tests {
         assert_eq!(missing_trie_digests, Vec::<Digest>::new());
     }
 
+    #[test]
+    fn find_missing_descendants_empty_keys() {
+        let mut store = InMemoryStore::new();
+        let updater = Updater::new(&mut store, EMPTY_TRIE_ROOT);
+        let root = updater.commit().expect("Could not commit");
+        let missing_trie_digests = store
+            .find_missing_trie_descendants(root)
+            .map(|missing_descendant| {
+                missing_descendant.expect("Error getting missing trie descendant")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(missing_trie_digests, Vec::<Digest>::new())
+    }
+
     // TODO: Test putting keys (updating along the way) and putting in keys (updating along the way)
     // and getting the same resulting state root
     //
@@ -299,16 +313,30 @@ mod tests {
     // TODO: Test do-nothing updater on Some digest
 
     mod proptests {
-        use crate::store::TrieWriter;
         use crate::{
             store::{
-                updater::{Updater, MAX_KEY_BYTES_LEN},
-                InMemoryStore, TrieReader,
+                updater::{OwnedTrie, Updater, MAX_KEY_BYTES_LEN},
+                InMemoryStore, TrieReader, TrieWriter,
             },
             wire_trie::EMPTY_TRIE_ROOT,
+            Digest,
         };
         use std::collections::{BTreeSet, HashSet};
         use test_strategy::proptest;
+
+        impl OwnedTrie {
+            pub(crate) fn get_nth_digest(
+                &self,
+                n: u8,
+            ) -> Result<crate::wire_trie::TrieLeafOrBranch, crate::wire_trie::TrieReadError>
+            {
+                self.as_trie().get_nth_digest(n)
+            }
+
+            pub(crate) fn version_byte_and_envelope_hash(&self) -> blake3::Hash {
+                self.as_trie().version_byte_and_envelope_hash()
+            }
+        }
 
         #[proptest]
         fn reverse_insert_is_the_same(keys: [[u8; 5]; 10]) {
@@ -489,17 +517,13 @@ mod tests {
                     .expect("Could not put")
             });
             let root = updater.commit().expect("Could not commit");
-            let missing_trie_digests = store
+            let missing_trie_digests: Vec<Digest> = store
                 .find_missing_trie_descendants(root)
                 .map(|missing_descendant| {
                     missing_descendant.expect("Error getting missing trie descendant")
                 })
                 .collect::<Vec<_>>();
-            if keys.is_empty() {
-                assert_eq!(missing_trie_digests, vec![EMPTY_TRIE_ROOT])
-            } else {
-                assert!(missing_trie_digests.is_empty());
-            }
+            assert_eq!(missing_trie_digests, Vec::<Digest>::new());
         }
 
         #[proptest]
