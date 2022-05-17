@@ -15,6 +15,6 @@ criterion = {git = "https://github.com/crepererum/criterion.rs.git", rev = "def1
 proptest = "1.0.0"
 test-strategy = "0.1.2"
 
-[[bench]]
-name = "benchmarks"
-harness = false
+# [[bench]]
+# name = "benchmarks"
+# harness = false
