@@ -1,6 +1,7 @@
+use crate::store::{TransactionError, TrieTransactional, TrieWriter};
 use crate::{
-    store::{TransactionError, TrieReader, TrieTransactional, TrieWriter},
-    wire_trie::{TrieTag, EMPTY_TRIE_ROOT},
+    store::TrieReader,
+    wire_trie::{TrieLeafOrBranch, TrieReadError, TrieTag, EMPTY_TRIE_ROOT},
     Digest, Trie, DIGEST_LENGTH,
 };
 
@@ -12,12 +13,20 @@ pub(crate) struct OwnedTrie(Vec<u8>);
 pub const MAX_KEY_BYTES_LEN: u8 = 255;
 
 impl OwnedTrie {
-    pub(crate) fn as_trie(&self) -> Trie {
+    fn as_trie(&self) -> Trie {
         Trie::new(&self.0)
     }
 
     pub(crate) fn trie_hash(&self) -> Digest {
         self.as_trie().trie_hash()
+    }
+
+    pub(crate) fn get_nth_digest(&self, n: u8) -> Result<TrieLeafOrBranch, TrieReadError> {
+        self.as_trie().get_nth_digest(n)
+    }
+
+    pub(crate) fn version_byte_and_envelope_hash(&self) -> blake3::Hash {
+        self.as_trie().version_byte_and_envelope_hash()
     }
 }
 

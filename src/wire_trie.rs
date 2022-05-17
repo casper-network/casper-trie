@@ -32,7 +32,9 @@
 //!
 //! Nodes cannot have 0 branches or just 1 branch.
 
-use std::{array::TryFromSliceError, iter::Map, slice::Chunks};
+use std::array::TryFromSliceError;
+use std::iter::Map;
+use std::slice::Chunks;
 
 pub const DIGEST_LENGTH: usize = 32;
 pub type Digest = [u8; DIGEST_LENGTH];
@@ -217,8 +219,7 @@ impl<'a> Trie<'a> {
         Some(digest_index)
     }
 
-    /// The value of the trie if it is a leaf. If the trie is not a leaf then this should return an
-    /// empty slice.
+    /// The value of the trie if it is a leaf. If the trie is not a leaf then this should return an empty slice.
     fn value(&self) -> &'a [u8] {
         if !self.is_leaf() {
             return &[];
@@ -227,8 +228,7 @@ impl<'a> Trie<'a> {
         &self.0[2 + affix_length..]
     }
 
-    /// The branch hashes of the trie if it is a node. If the trie is not a node then this should
-    /// return an empty slice.
+    /// The branch hashes of the trie if it is a node. If the trie is not a node then this should return an empty slice.
     fn branches(&self) -> &'a [u8] {
         if self.is_leaf() {
             return &[];
