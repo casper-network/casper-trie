@@ -23,26 +23,4 @@ jobs:
           override: true
           components: rustfmt, clippy
 
-      - name: Fmt
-        uses: actions-rs/cargo@v1
-        with:
-          command: --locked
-          args: fmt -- --check
-
-      - name: Audit
-        uses: actions-rs/cargo@v1
-        with:
-          command: --locked
-          args: audit --deny warnings
-
-      - name: Clippy
-        uses: actions-rs/cargo@v1
-        with:
-          command: --locked
-          args: clippy --all-targets -- -D warnings
-
-      - name: Test
-        uses: actions-rs/cargo@v1
-        with:
-          command: --locked
-          args: test
+      - run: make check
