@@ -6,7 +6,9 @@ pub mod updater;
 
 pub use crate::store::backends::in_memory::InMemoryStore;
 use crate::{
-    wire_trie::{Leaf, Trie, TrieLeafOrBranch, TrieReadError, TrieTag, EMPTY_TRIE_ROOT},
+    wire_trie::{
+        BranchIterator, Leaf, Trie, TrieLeafOrBranch, TrieReadError, TrieTag, EMPTY_TRIE_ROOT,
+    },
     Digest,
 };
 
@@ -15,7 +17,7 @@ use crate::{
 // TODO: struct Ref(u64)
 // TODO struct Store { roots: HashMap<Digest, Ref>, tries: HashMap<Ref, Vec<u8>> }
 
-pub trait TrieStore: Sized {
+pub trait TrieReader: Sized {
     type Error: std::error::Error;
     fn get_trie(&self, digest: &Digest) -> Result<Option<Trie>, Self::Error>;
 
@@ -26,18 +28,51 @@ pub trait TrieStore: Sized {
     ) -> TrieLeavesUnderPrefixIterator<Self> {
         TrieLeavesUnderPrefixIterator::new(self, root, prefix)
     }
+
+    fn find_missing_trie_descendants(
+        &self,
+        digest: Digest,
+    ) -> MissingTrieDescendantsIterator<Self> {
+        MissingTrieDescendantsIterator::new(self, digest)
+    }
+}
+
+pub trait TrieWriter {
+    type Error: std::error::Error;
+    fn put_trie(&mut self, digest: Digest, trie: Trie) -> Result<(), Self::Error>;
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum TransactionError<E1, E2> {
+    #[error("{0}")]
+    ErrorCreatingTransaction(E1),
+    #[error("{0}")]
+    Abort(E2),
+}
+
+pub trait TrieTransactional {
+    type ErrorCreatingTransaction: std::error::Error;
+    type Transaction: TrieWriter;
+
+    fn transaction<F, A, E>(
+        &mut self,
+        f: F,
+    ) -> Result<A, TransactionError<Self::ErrorCreatingTransaction, E>>
+    where
+        E: std::error::Error,
+        F: FnMut(&mut Self::Transaction) -> Result<A, E>;
 }
 
 #[derive(thiserror::Error, Debug)]
 pub enum TrieLeavesUnderPrefixIteratorError<S>
 where
-    S: TrieStore,
+    S: TrieReader,
 {
     #[error("Digest not found: {0:?}")]
     DigestNotFound(Box<Digest>),
 
     #[error(transparent)]
-    TrieStoreError(<S as TrieStore>::Error),
+    TrieStoreError(<S as TrieReader>::Error),
 
     #[error(transparent)]
     TrieReadError(#[from] TrieReadError),
@@ -65,7 +100,7 @@ impl<'a, S> TrieLeavesUnderPrefixIterator<'a, S> {
 
 impl<'a, S> Iterator for TrieLeavesUnderPrefixIterator<'a, S>
 where
-    S: TrieStore,
+    S: TrieReader,
 {
     type Item = Result<Leaf<'a>, TrieLeavesUnderPrefixIteratorError<S>>;
 
@@ -160,5 +195,84 @@ where
             }
         }
         None
+    }
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum MissingTrieIteratorError<S>
+where
+    S: TrieReader,
+{
+    #[error(transparent)]
+    TrieStoreError(<S as TrieReader>::Error),
+
+    #[error(transparent)]
+    TrieReadError(#[from] TrieReadError),
+}
+
+pub struct MissingTrieDescendantsIterator<'a, S> {
+    store: &'a S,
+    maybe_initial_trie_digest: Option<Digest>,
+    trie_branches_being_visited: Vec<BranchIterator<'a>>,
+}
+
+impl<'a, S> MissingTrieDescendantsIterator<'a, S> {
+    pub fn new(store: &'a S, initial_trie_digest: Digest) -> Self {
+        Self {
+            store,
+            maybe_initial_trie_digest: Some(initial_trie_digest),
+            trie_branches_being_visited: Vec::new(),
+        }
+    }
+}
+
+impl<'a, S> Iterator for MissingTrieDescendantsIterator<'a, S>
+where
+    S: TrieReader,
+{
+    type Item = Result<Digest, MissingTrieIteratorError<S>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(initial_trie_digest) = self.maybe_initial_trie_digest.take() {
+            let initial_trie = match self.store.get_trie(&initial_trie_digest).transpose() {
+                Some(Ok(initial_trie)) => initial_trie,
+                Some(Err(err)) => {
+                    return Some(Err(MissingTrieIteratorError::TrieStoreError(err)));
+                }
+                None => {
+                    if initial_trie_digest == EMPTY_TRIE_ROOT {
+                        return None;
+                    } else {
+                        return Some(Ok(initial_trie_digest));
+                    }
+                }
+            };
+            self.trie_branches_being_visited
+                .push(initial_trie.iter_branch_digests());
+        }
+        loop {
+            let branch_iter = self.trie_branches_being_visited.last_mut()?;
+            let branch_digest = match branch_iter.next() {
+                Some(Ok(branch_digest)) => branch_digest,
+                Some(Err(err)) => {
+                    return Some(Err(err.into()));
+                }
+                None => {
+                    self.trie_branches_being_visited.pop();
+                    continue;
+                }
+            };
+            let trie = match self.store.get_trie(branch_digest).transpose() {
+                Some(Ok(trie)) => trie,
+                Some(Err(err)) => {
+                    return Some(Err(MissingTrieIteratorError::TrieStoreError(err)));
+                }
+                None => {
+                    return Some(Ok(*branch_digest));
+                }
+            };
+            self.trie_branches_being_visited
+                .push(trie.iter_branch_digests());
+        }
     }
 }

@@ -8,10 +8,23 @@ mod tests {
     use crate::{
         store::{
             updater::{Node, OwnedTrie, Updater, UpdatingTrie, MAX_KEY_BYTES_LEN},
-            InMemoryStore, TrieStore,
+            InMemoryStore, TrieReader,
         },
-        wire_trie::{TrieTag, EMPTY_TRIE_ROOT},
+        wire_trie::{Leaf, TrieTag, EMPTY_TRIE_ROOT},
+        Digest,
     };
+
+    impl<'a> Leaf<'a> {
+        pub(crate) fn key(&self) -> &[u8] {
+            let data = self.0;
+            &data[1..1 + data[0] as usize]
+        }
+
+        pub(crate) fn value(&self) -> &[u8] {
+            let data = self.0;
+            &data[1 + data[0] as usize..]
+        }
+    }
 
     fn node_with_one_branch(branch_idx: u8) -> Node {
         let mut node = Node::new_empty(vec![0, 1, 2]);
@@ -22,7 +35,7 @@ mod tests {
     #[test]
     fn trie_bytes_from_node_with_one_branch() {
         let node = node_with_one_branch(0);
-        let trie_bytes = OwnedTrie::try_from(&node).expect("should convert to trie bytes");
+        let trie_bytes = OwnedTrie::try_from(&node).expect("Should convert to trie bytes");
         assert_eq!(trie_bytes.as_ref()[0] >> 5, TrieTag::Node31 as u8);
         assert_eq!(trie_bytes.as_ref()[0] & 0b11111, 1);
     }
@@ -31,10 +44,10 @@ mod tests {
     fn node_with_one_branch_round_trip() {
         for branch_idx in 0..=MAX_KEY_BYTES_LEN {
             let node = node_with_one_branch(branch_idx);
-            let owned_trie = OwnedTrie::try_from(&node).expect("should convert to trie bytes");
+            let owned_trie = OwnedTrie::try_from(&node).expect("Should convert to trie bytes");
             let expected = UpdatingTrie::node(node_with_one_branch(branch_idx));
             let parsed =
-                UpdatingTrie::try_from(&owned_trie).expect("should convert to UpdatingTrie");
+                UpdatingTrie::try_from(&owned_trie).expect("Should convert to UpdatingTrie");
             assert_eq!(expected, parsed, "Bad idx: {}", branch_idx)
         }
     }
@@ -82,7 +95,7 @@ mod tests {
         updater
             .put(key2.as_ref(), value.as_ref())
             .expect("Could not put");
-        let root = updater.commit();
+        let root = updater.commit().expect("Could not commit");
         let expected_keys = vec![key1, key2];
         let keys_from_storage: Vec<Vec<u8>> = store
             .leaves_under_prefix(root, vec![])
@@ -108,7 +121,7 @@ mod tests {
         updater
             .put(key3.as_ref(), value.as_ref())
             .expect("Could not put");
-        let root = updater.commit();
+        let root = updater.commit().expect("Could not commit");
         let expected_keys = vec![key1, key2];
         let keys_from_storage: Vec<Vec<u8>> = store
             .leaves_under_prefix(root, vec![0, 1, 2])
@@ -173,7 +186,7 @@ mod tests {
                 .put(key.as_ref(), [0u8].as_ref())
                 .expect("Could not put")
         });
-        let root = updater.commit();
+        let root = updater.commit().expect("Could not commit");
 
         for key in keys {
             let keys_from_storage: Vec<Vec<u8>> = store
@@ -207,7 +220,7 @@ mod tests {
                 .put(key.as_ref(), [0u8].as_ref())
                 .expect("Could not put")
         });
-        let root = updater.commit();
+        let root = updater.commit().expect("Could not commit");
 
         for key in keys {
             let keys_from_storage: Vec<Vec<u8>> = store
@@ -222,7 +235,7 @@ mod tests {
     fn empty_trie() {
         let mut store = InMemoryStore::new();
         let updater = Updater::new(&mut store, EMPTY_TRIE_ROOT);
-        let root = updater.commit();
+        let root = updater.commit().expect("Could not commit");
         assert_eq!(root, EMPTY_TRIE_ROOT)
     }
 
@@ -230,10 +243,64 @@ mod tests {
     fn empty_leaf_iterator() {
         let mut store = InMemoryStore::new();
         let updater = Updater::new(&mut store, EMPTY_TRIE_ROOT);
-        let root = updater.commit();
+        let root = updater.commit().expect("Could not commit");
         let leaves: Vec<_> = store.leaves_under_prefix(root, vec![]).collect();
         dbg!(&leaves);
         assert!(leaves.is_empty())
+    }
+
+    #[test]
+    fn find_missing_descendants_trie_with_just_one_thing() {
+        let keys = [[0u8, 0, 0, 0, 0]];
+        let mut store = InMemoryStore::new();
+        let mut forward_updater = Updater::new(&mut store, EMPTY_TRIE_ROOT);
+        keys.iter().for_each(|key| {
+            forward_updater
+                .put(key.as_ref(), [0u8].as_ref())
+                .expect("Could not put")
+        });
+        let root = forward_updater.commit().expect("Could not commit");
+        let missing_trie_digests: Vec<Digest> = store
+            .find_missing_trie_descendants(root)
+            .map(|missing_descendant| missing_descendant.expect("Error getting missing descendant"))
+            .collect::<Vec<_>>();
+        assert_eq!(missing_trie_digests, Vec::<Digest>::new());
+    }
+
+    #[test]
+    fn find_missing_descendants_trie_with_several_things() {
+        let keys = [
+            [0u8, 0, 0, 0, 0],
+            [0, 0, 0, 0, 1],
+            [0, 0, 0, 1, 0],
+            [0, 0, 0, 1, 1],
+            [0, 0, 1, 0, 0],
+            [0, 0, 1, 0, 1],
+            [0, 0, 1, 1, 0],
+            [0, 0, 1, 1, 1],
+            [0, 1, 0, 0, 0],
+            [0, 1, 0, 0, 1],
+            [0, 1, 0, 1, 0],
+            [0, 1, 0, 1, 1],
+            [0, 1, 1, 0, 0],
+            [0, 1, 1, 0, 1],
+            [0, 1, 1, 1, 0],
+            [0, 1, 1, 1, 1],
+            [1, 0, 0, 0, 0],
+        ];
+        let mut store = InMemoryStore::new();
+        let mut forward_updater = Updater::new(&mut store, EMPTY_TRIE_ROOT);
+        keys.iter().for_each(|key| {
+            forward_updater
+                .put(key.as_ref(), [0u8].as_ref())
+                .expect("Could not put")
+        });
+        let root = forward_updater.commit().expect("Could not commit");
+        let missing_trie_digests: Vec<Digest> = store
+            .find_missing_trie_descendants(root)
+            .map(|missing_descendant| missing_descendant.expect("Error getting missing descendant"))
+            .collect::<Vec<_>>();
+        assert_eq!(missing_trie_digests, Vec::<Digest>::new());
     }
 
     // TODO: Test putting keys (updating along the way) and putting in keys (updating along the way)
@@ -247,9 +314,10 @@ mod tests {
         use crate::{
             store::{
                 updater::{Updater, MAX_KEY_BYTES_LEN},
-                InMemoryStore, TrieStore,
+                InMemoryStore, TrieReader, TrieWriter,
             },
             wire_trie::EMPTY_TRIE_ROOT,
+            Digest,
         };
         use std::collections::{BTreeSet, HashSet};
         use test_strategy::proptest;
@@ -265,7 +333,7 @@ mod tests {
                         .put(key.as_ref(), [0u8].as_ref())
                         .expect("Could not put")
                 });
-                forward_updater.commit()
+                forward_updater.commit().expect("Could not commit")
             };
 
             let reverse_digest = {
@@ -275,7 +343,7 @@ mod tests {
                         .put(key.as_ref(), [0u8].as_ref())
                         .expect("Could not put")
                 });
-                reverse_updater.commit()
+                reverse_updater.commit().expect("Could not commit")
             };
 
             assert_eq!(forward_digest, reverse_digest)
@@ -292,7 +360,7 @@ mod tests {
                         .put(key.as_ref(), [0u8].as_ref())
                         .expect("Could not put")
                 });
-                updater.commit()
+                updater.commit().expect("Could not commit")
             };
 
             let insert_and_insert_again_digest = {
@@ -302,14 +370,14 @@ mod tests {
                         .put(key.as_ref(), [0u8].as_ref())
                         .expect("Could not put")
                 });
-                let digest = updater.commit();
+                let digest = updater.commit().expect("Could not commit");
                 let mut updater = Updater::new(&mut store, digest);
                 keys2.iter().for_each(|key| {
                     updater
                         .put(key.as_ref(), [0u8].as_ref())
                         .expect("Could not put")
                 });
-                updater.commit()
+                updater.commit().expect("Could not commit")
             };
 
             assert_eq!(insert_all_at_once_digest, insert_and_insert_again_digest)
@@ -328,7 +396,7 @@ mod tests {
                         .put(key.as_ref(), [0u8].as_ref())
                         .expect("Could not put");
                 }
-                updater.commit()
+                updater.commit().expect("Could not commit")
             };
 
             let expected: Vec<_> = keys
@@ -373,7 +441,7 @@ mod tests {
                         .put(key.as_ref(), [0u8].as_ref())
                         .expect("Could not put");
                 }
-                updater.commit()
+                updater.commit().expect("Could not commit")
             };
 
             let expected: Vec<_> = keys
@@ -412,7 +480,7 @@ mod tests {
                         .put(&prefixed_key, [0u8].as_ref())
                         .expect("Could not put");
                 }
-                updater.commit()
+                updater.commit().expect("Could not commit")
             };
 
             let mut retrieved_keys: Vec<Vec<u8>> = store
@@ -421,6 +489,81 @@ mod tests {
                 .collect();
             retrieved_keys.sort();
             assert_eq!(keys, retrieved_keys)
+        }
+
+        #[proptest]
+        fn find_missing_descendants_full_tries(keys: Vec<[u8; 5]>) {
+            let mut store = InMemoryStore::new();
+            let mut updater = Updater::new(&mut store, EMPTY_TRIE_ROOT);
+            keys.iter().for_each(|key| {
+                updater
+                    .put(key.as_ref(), [0u8].as_ref())
+                    .expect("Could not put")
+            });
+            let root = updater.commit().expect("Could not commit");
+            let missing_trie_digests = store
+                .find_missing_trie_descendants(root)
+                .map(|missing_descendant| {
+                    missing_descendant.expect("Error getting missing trie descendant")
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(missing_trie_digests, Vec::<Digest>::new());
+        }
+
+        #[proptest]
+        fn copy_one_trie_to_another(key_value_pairs: Vec<([u8; 5], [u8; 5])>) {
+            let mut store = InMemoryStore::new();
+
+            let mut roots = vec![EMPTY_TRIE_ROOT];
+            roots.extend(key_value_pairs.iter().map(|(key, value)| {
+                let mut updater = Updater::new(&mut store, EMPTY_TRIE_ROOT);
+                updater.put(key, value).expect("Could not put");
+                updater.commit().expect("Could not commit")
+            }));
+
+            let mut store2 = InMemoryStore::new();
+            for root_to_be_copied in roots.iter() {
+                let mut keep_going = true;
+                while keep_going {
+                    keep_going = false;
+                    let missing_descendant_trie_digests = store2
+                        .find_missing_trie_descendants(root_to_be_copied.to_owned())
+                        .map(|missing_trie_digest| {
+                            missing_trie_digest.expect("Trie digest is missing")
+                        })
+                        .collect::<Vec<_>>();
+                    for missing_trie_digest in missing_descendant_trie_digests {
+                        keep_going = true;
+                        store2
+                            .put_trie(
+                                missing_trie_digest,
+                                store
+                                    .get_trie(&missing_trie_digest)
+                                    .expect("Could not get trie")
+                                    .expect("Trie should not be missing"),
+                            )
+                            .expect("Could not put trie");
+                    }
+                }
+
+                let expected_key_values = store
+                    .leaves_under_prefix(root_to_be_copied.to_owned(), vec![])
+                    .map(|leaf_result| {
+                        let leaf = leaf_result.expect("Could not get leaf");
+                        (leaf.key().to_owned(), leaf.value().to_owned())
+                    })
+                    .collect::<Vec<_>>();
+
+                let actual_key_values = store2
+                    .leaves_under_prefix(root_to_be_copied.to_owned(), vec![])
+                    .map(|leaf_result| {
+                        let leaf = leaf_result.expect("Could not get leaf");
+                        (leaf.key().to_owned(), leaf.value().to_owned())
+                    })
+                    .collect::<Vec<_>>();
+
+                assert_eq!(expected_key_values, actual_key_values);
+            }
         }
     }
 }
