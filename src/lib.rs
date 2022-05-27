@@ -511,11 +511,11 @@ mod tests {
         }
 
         #[proptest]
-        fn copy_one_trie_to_another(keys_value_pairs: Vec<([u8; 5], [u8; 5])>) {
+        fn copy_one_trie_to_another(key_value_pairs: Vec<([u8; 5], [u8; 5])>) {
             let mut store = InMemoryStore::new();
 
             let mut roots = vec![EMPTY_TRIE_ROOT];
-            roots.extend(keys_value_pairs.iter().map(|(key, value)| {
+            roots.extend(key_value_pairs.iter().map(|(key, value)| {
                 let mut updater = Updater::new(&mut store, EMPTY_TRIE_ROOT);
                 updater.put(key, value).expect("Could not put");
                 updater.commit().expect("Could not commit")
