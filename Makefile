@@ -5,8 +5,8 @@ all: check
 check:
 	cargo +nightly fmt --check
 	cargo audit --deny warnings
-	cargo clippy -- -D warnings
-	cargo test
+	cargo clippy --all-targets -- -D warnings
+	cargo test --all-targets
 	cargo bench
 
 .PHONY: format
