@@ -4,7 +4,7 @@ all: check
 .PHONY: check
 check:
 	cargo +nightly fmt --check
-	cargo audit
+	cargo audit --deny warnings
 	cargo clippy
 	cargo test
 	cargo bench
