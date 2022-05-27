@@ -525,11 +525,7 @@ impl<'a, S> Updater<'a, S> {
 
         self.store.transaction(move |trie_writer| {
             // Get ownership of the current state
-            let current_state = {
-                let mut my_current_state = UpdatingTrie::Empty;
-                std::mem::swap(&mut my_current_state, &mut current_state);
-                my_current_state
-            };
+            let current_state = std::mem::replace(&mut current_state, UpdatingTrie::Empty);
             let starting_node = match current_state {
                 UpdatingTrie::Empty => {
                     return Ok([0; 32]);
