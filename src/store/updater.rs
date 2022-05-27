@@ -1,6 +1,6 @@
 use crate::{
-    store::{backends::in_memory::InMemoryStore, TrieStore},
-    wire_trie::{TrieLeafOrBranch, TrieReadError, TrieTag, EMPTY_TRIE_ROOT},
+    store::{TransactionError, TrieReader, TrieTransactional, TrieWriter},
+    wire_trie::{TrieTag, EMPTY_TRIE_ROOT},
     Digest, Trie, DIGEST_LENGTH,
 };
 
@@ -12,16 +12,12 @@ pub(crate) struct OwnedTrie(Vec<u8>);
 pub const MAX_KEY_BYTES_LEN: u8 = 255;
 
 impl OwnedTrie {
+    fn as_trie(&self) -> Trie {
+        Trie::new(&self.0)
+    }
+
     pub(crate) fn trie_hash(&self) -> Digest {
-        Trie::new(&self.0).trie_hash()
-    }
-
-    pub(crate) fn get_nth_digest(&self, n: u8) -> Result<TrieLeafOrBranch, TrieReadError> {
-        Trie::new(&self.0).get_nth_digest(n)
-    }
-
-    pub(crate) fn version_byte_and_envelope_hash(&self) -> blake3::Hash {
-        Trie::new(&self.0).version_byte_and_envelope_hash()
+        self.as_trie().trie_hash()
     }
 }
 
@@ -129,7 +125,7 @@ impl Node {
     // This method is exposed to enable inserting elements into a recursive UpdatingTrie structure.
     pub(crate) fn new_branch_at_idx(&mut self, idx: u8) -> &mut UpdatingTrie {
         let branch = &mut self.branches[idx as usize];
-        if matches!(branch, UpdatingTrie::Empty) {
+        if UpdatingTrie::Empty == *branch {
             self.branch_count += 1;
         }
         branch
@@ -228,9 +224,7 @@ impl TryFrom<Trie<'_>> for UpdatingTrie {
         // The 3 highest significant bits are the tag code, the lower 5 bits are the branch count.
         let tag = trie.tag();
         if tag == TrieTag::Leaf {
-            return Ok(UpdatingTrie::leaf(OwnedLeaf(
-                trie.raw_bytes()[1..].to_vec(),
-            )));
+            return Ok(UpdatingTrie::leaf(OwnedLeaf(trie.as_bytes()[1..].to_vec())));
         }
 
         let mut branches = empty_branches();
@@ -365,15 +359,15 @@ impl TryFrom<&Node> for OwnedTrie {
 }
 
 #[derive(Debug)]
-pub struct Updater<'a> {
+pub struct Updater<'a, S> {
     current_state: UpdatingTrie,
-    store: &'a mut InMemoryStore,
+    store: &'a mut S,
 }
 
 #[derive(thiserror::Error, Debug)]
 pub enum UpdaterPutError<S>
 where
-    S: TrieStore,
+    S: TrieReader,
 {
     #[error("Digest not found: {0:?}")]
     DigestNotFound(Box<Digest>),
@@ -388,11 +382,11 @@ where
     KeyMustHaveAtMost255Bytes(#[from] KeyMustHaveAtMost255Bytes),
 
     #[error(transparent)]
-    TrieStoreError(<S as TrieStore>::Error),
+    TrieStoreError(<S as TrieReader>::Error),
 }
 
-impl<'a> Updater<'a> {
-    pub fn new(store: &mut InMemoryStore, state_root: Digest) -> Updater {
+impl<'a, S> Updater<'a, S> {
+    pub fn new(store: &'a mut S, state_root: Digest) -> Updater<'a, S> {
         let current_state = if state_root == EMPTY_TRIE_ROOT {
             UpdatingTrie::Empty
         } else {
@@ -406,7 +400,10 @@ impl<'a> Updater<'a> {
 
     // TODO: delete
 
-    pub fn put(&mut self, key: &[u8], value: &[u8]) -> Result<(), UpdaterPutError<InMemoryStore>> {
+    pub fn put(&mut self, key: &[u8], value: &[u8]) -> Result<(), UpdaterPutError<S>>
+    where
+        S: TrieReader,
+    {
         let new_leaf = Box::new(OwnedLeaf::new(key, value)?);
         let mut key_bytes_traversed_count: usize = 0;
         let mut traversed_state = &mut self.current_state;
@@ -512,93 +509,105 @@ impl<'a> Updater<'a> {
     // TODO: look into hadoop-style reducers here
     /// Writes the state of the updater to the store, computing the Merkle tree updates along the
     /// way.
-    pub fn commit(self) -> Digest {
-        let Updater {
-            current_state,
-            store,
-        } = self;
+    pub fn commit(
+        self,
+    ) -> Result<
+        Digest,
+        TransactionError<
+            <S as TrieTransactional>::ErrorCreatingTransaction,
+            <<S as TrieTransactional>::Transaction as TrieWriter>::Error,
+        >,
+    >
+    where
+        S: TrieTransactional,
+    {
+        let mut current_state = self.current_state;
 
-        let starting_node = match current_state {
-            UpdatingTrie::Empty => {
-                return [0; 32];
-            }
-            UpdatingTrie::Digest(digest) => {
-                return *digest;
-            }
-            UpdatingTrie::Leaf(leaf) => {
-                let owned_trie = OwnedTrie::from(*leaf);
-                let digest = owned_trie.trie_hash();
-                store.put_trie(digest, owned_trie);
-                return digest;
-            }
-            UpdatingTrie::Node(node) => node,
-        };
-
-        struct NodeStackElement {
-            resume_position: u8,
-            node: Box<Node>,
-        }
-
-        let mut node_stack: Vec<NodeStackElement> = vec![NodeStackElement {
-            resume_position: 0,
-            node: starting_node,
-        }];
-        let mut digest_to_be_slotted_into_node_at_top_of_stack: Option<Digest> = None;
-        while let Some(NodeStackElement {
-            mut resume_position,
-            mut node,
-        }) = node_stack.pop()
-        {
-            if let Some(digest) = digest_to_be_slotted_into_node_at_top_of_stack {
-                node.swap_branch_at_idx(resume_position, &mut UpdatingTrie::digest(digest));
-                digest_to_be_slotted_into_node_at_top_of_stack = None;
-                resume_position = resume_position.saturating_add(1)
+        self.store.transaction(move |trie_writer| {
+            // Get ownership of the current state
+            let current_state = std::mem::replace(&mut current_state, UpdatingTrie::Empty);
+            let starting_node = match current_state {
+                UpdatingTrie::Empty => {
+                    return Ok(EMPTY_TRIE_ROOT);
+                }
+                UpdatingTrie::Digest(digest) => {
+                    return Ok(*digest);
+                }
+                UpdatingTrie::Leaf(leaf) => {
+                    let owned_trie = OwnedTrie::from(*leaf);
+                    let digest = owned_trie.trie_hash();
+                    trie_writer.put_trie(digest, owned_trie.as_trie())?;
+                    return Ok(digest);
+                }
+                UpdatingTrie::Node(node) => node,
             };
 
-            let mut maybe_new_node_to_push = UpdatingTrie::Empty;
-            for (idx, branch) in
-                node.iter_mut_non_flat_branches_from_starting_index(resume_position)
+            struct NodeStackElement {
+                resume_position: u8,
+                node: Box<Node>,
+            }
+
+            let mut node_stack: Vec<NodeStackElement> = vec![NodeStackElement {
+                resume_position: 0,
+                node: starting_node,
+            }];
+            let mut digest_to_be_slotted_into_node_at_top_of_stack: Option<Digest> = None;
+            while let Some(NodeStackElement {
+                mut resume_position,
+                mut node,
+            }) = node_stack.pop()
             {
-                match branch {
-                    UpdatingTrie::Empty | UpdatingTrie::Digest(_) => {
-                        unreachable!()
-                    }
-                    UpdatingTrie::Leaf(_) => {
-                        let mut leaf = UpdatingTrie::Empty;
-                        std::mem::swap(branch, &mut leaf);
-                        if let UpdatingTrie::Leaf(leaf) = leaf {
-                            let owned_trie = OwnedTrie::from(*leaf);
-                            let digest = owned_trie.trie_hash();
-                            store.put_trie(digest, owned_trie);
-                            std::mem::swap(branch, &mut UpdatingTrie::digest(digest));
+                if let Some(digest) = digest_to_be_slotted_into_node_at_top_of_stack {
+                    node.swap_branch_at_idx(resume_position, &mut UpdatingTrie::digest(digest));
+                    digest_to_be_slotted_into_node_at_top_of_stack = None;
+                    resume_position = resume_position.saturating_add(1)
+                };
+
+                let mut maybe_new_node_to_push = UpdatingTrie::Empty;
+                for (idx, branch) in
+                    node.iter_mut_non_flat_branches_from_starting_index(resume_position)
+                {
+                    match branch {
+                        UpdatingTrie::Empty | UpdatingTrie::Digest(_) => {
+                            unreachable!()
+                        }
+                        UpdatingTrie::Leaf(_) => {
+                            let mut leaf = UpdatingTrie::Empty;
+                            std::mem::swap(branch, &mut leaf);
+                            if let UpdatingTrie::Leaf(leaf) = leaf {
+                                let owned_trie = OwnedTrie::from(*leaf);
+                                let digest = owned_trie.trie_hash();
+                                trie_writer.put_trie(digest, owned_trie.as_trie())?;
+                                std::mem::swap(branch, &mut UpdatingTrie::digest(digest));
+                            }
+                        }
+                        UpdatingTrie::Node(_) => {
+                            resume_position = idx;
+                            std::mem::swap(branch, &mut maybe_new_node_to_push);
+                            break;
                         }
                     }
-                    UpdatingTrie::Node(_) => {
-                        resume_position = idx;
-                        std::mem::swap(branch, &mut maybe_new_node_to_push);
-                        break;
-                    }
+                }
+                if let UpdatingTrie::Node(new_node_to_push) = maybe_new_node_to_push {
+                    node_stack.push(NodeStackElement {
+                        resume_position,
+                        node,
+                    });
+                    node_stack.push(NodeStackElement {
+                        resume_position: 0,
+                        node: new_node_to_push,
+                    });
+                } else {
+                    let owned_trie = OwnedTrie::try_from(&*node).expect("node must be flat");
+                    let digest = owned_trie.trie_hash();
+                    trie_writer.put_trie(digest, owned_trie.as_trie())?;
+                    digest_to_be_slotted_into_node_at_top_of_stack = Some(digest);
                 }
             }
-            if let UpdatingTrie::Node(new_node_to_push) = maybe_new_node_to_push {
-                node_stack.push(NodeStackElement {
-                    resume_position,
-                    node,
-                });
-                node_stack.push(NodeStackElement {
-                    resume_position: 0,
-                    node: new_node_to_push,
-                });
-            } else {
-                let owned_trie = OwnedTrie::try_from(&*node).expect("node must be flat");
-                let digest = owned_trie.trie_hash();
-                store.put_trie(digest, owned_trie);
-                digest_to_be_slotted_into_node_at_top_of_stack = Some(digest);
-            }
-        }
-        // TODO: Don't expect here
-        digest_to_be_slotted_into_node_at_top_of_stack
-            .expect("Must have inserted top node into trie store")
+            // We can expect because it's unreachable to get here with the digest as `None`
+            Ok(digest_to_be_slotted_into_node_at_top_of_stack
+                .expect("Must have inserted top node into trie store"))
+        })
     }
 }
 
@@ -615,9 +624,19 @@ mod tests {
             backends::in_memory::InMemoryStore,
             updater::{Node, NodeMustBeFlatError, OwnedLeaf, OwnedTrie, Updater, UpdatingTrie},
         },
-        wire_trie::{TrieLeafOrBranch, EMPTY_TRIE_ROOT},
+        wire_trie::{TrieLeafOrBranch, TrieReadError, EMPTY_TRIE_ROOT},
         Digest,
     };
+
+    impl OwnedTrie {
+        pub(crate) fn get_nth_digest(&self, n: u8) -> Result<TrieLeafOrBranch, TrieReadError> {
+            self.as_trie().get_nth_digest(n)
+        }
+
+        pub(crate) fn version_byte_and_envelope_hash(&self) -> blake3::Hash {
+            self.as_trie().version_byte_and_envelope_hash()
+        }
+    }
 
     fn node_with_n_branches(branch_count: u8, offset: u8, spacing: u8) -> Node {
         let mut node = Node::new_empty(vec![0, 1, 2]);

@@ -21,7 +21,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                     .put((x as u64).to_le_bytes().as_ref(), &[])
                     .expect("could not put");
             }
-            updater.commit();
+            updater.commit().expect("Could not commit");
         })
     });
 }
