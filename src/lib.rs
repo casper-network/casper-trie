@@ -317,6 +317,7 @@ mod tests {
                 InMemoryStore, TrieReader, TrieWriter,
             },
             wire_trie::EMPTY_TRIE_ROOT,
+            Digest,
         };
         use std::collections::{BTreeSet, HashSet};
         use test_strategy::proptest;
@@ -506,11 +507,7 @@ mod tests {
                     missing_descendant.expect("Error getting missing trie descendant")
                 })
                 .collect::<Vec<_>>();
-            if keys.is_empty() {
-                assert_eq!(missing_trie_digests, vec![EMPTY_TRIE_ROOT])
-            } else {
-                assert!(missing_trie_digests.is_empty());
-            }
+            assert_eq!(missing_trie_digests, Vec::<Digest>::new());
         }
 
         #[proptest]
