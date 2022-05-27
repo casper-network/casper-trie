@@ -10,9 +10,21 @@ mod tests {
             updater::{Node, OwnedTrie, Updater, UpdatingTrie, MAX_KEY_BYTES_LEN},
             InMemoryStore, TrieReader,
         },
-        wire_trie::{TrieTag, EMPTY_TRIE_ROOT},
+        wire_trie::{Leaf, TrieTag, EMPTY_TRIE_ROOT},
         Digest,
     };
+
+    impl<'a> Leaf<'a> {
+        pub(crate) fn key(&self) -> &[u8] {
+            let data = self.0;
+            &data[1..1 + data[0] as usize]
+        }
+
+        pub(crate) fn value(&self) -> &[u8] {
+            let data = self.0;
+            &data[1 + data[0] as usize..]
+        }
+    }
 
     fn node_with_one_branch(branch_idx: u8) -> Node {
         let mut node = Node::new_empty(vec![0, 1, 2]);
@@ -299,11 +311,10 @@ mod tests {
     // TODO: Test do-nothing updater on Some digest
 
     mod proptests {
-        use crate::store::TrieWriter;
         use crate::{
             store::{
                 updater::{Updater, MAX_KEY_BYTES_LEN},
-                InMemoryStore, TrieReader,
+                InMemoryStore, TrieReader, TrieWriter,
             },
             wire_trie::EMPTY_TRIE_ROOT,
         };

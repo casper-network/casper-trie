@@ -32,9 +32,7 @@
 //!
 //! Nodes cannot have 0 branches or just 1 branch.
 
-use std::array::TryFromSliceError;
-use std::iter::Map;
-use std::slice::Chunks;
+use std::{array::TryFromSliceError, iter::Map, slice::Chunks};
 
 pub const DIGEST_LENGTH: usize = 32;
 pub type Digest = [u8; DIGEST_LENGTH];
@@ -56,23 +54,13 @@ pub struct Trie<'a>(&'a [u8]);
 pub type TrieReadError = std::array::TryFromSliceError;
 
 #[derive(Debug, Clone)]
-pub struct Leaf<'a>(&'a [u8]);
+pub struct Leaf<'a>(pub(crate) &'a [u8]);
 
 impl<'a> Leaf<'a> {
     pub(crate) fn new(wire_trie_ref: Trie) -> Leaf {
         let Trie(raw_bytes) = wire_trie_ref;
         // Throw away the leading byte and leave only the key length and data
         Leaf(&raw_bytes[1..])
-    }
-
-    pub(crate) fn key(&self) -> &[u8] {
-        let data = self.0;
-        &data[1..1 + data[0] as usize]
-    }
-
-    pub(crate) fn value(&self) -> &[u8] {
-        let data = self.0;
-        &data[1 + data[0] as usize..]
     }
 }
 
@@ -84,20 +72,20 @@ pub(crate) enum TrieLeafOrBranch<'a> {
     IndexOutOfRange,
 }
 
-pub(crate) struct Proof<'a> {
-    version_byte_and_envelope_hash: Digest,
-    branches_before: &'a [u8],
-    branches_after: &'a [u8],
-}
-
-pub(crate) enum TrieReadWithProof<'a> {
-    Leaf(Leaf<'a>),
-    BranchWithProof {
-        digest: &'a Digest,
-        proof: Proof<'a>,
-    },
-    NotFound,
-}
+// pub struct Proof<'a> {
+//     version_byte_and_envelope_hash: Digest,
+//     branches_before: &'a [u8],
+//     branches_after: &'a [u8],
+// }
+//
+// pub enum TrieReadWithProof<'a> {
+//     Leaf(Leaf<'a>),
+//     BranchWithProof {
+//         digest: &'a Digest,
+//         proof: Proof<'a>,
+//     },
+//     NotFound,
+// }
 
 pub(crate) type BranchIterator<'a> =
     Map<Chunks<'a, u8>, fn(&'a [u8]) -> Result<&'a Digest, TryFromSliceError>>;
@@ -219,7 +207,8 @@ impl<'a> Trie<'a> {
         Some(digest_index)
     }
 
-    /// The value of the trie if it is a leaf. If the trie is not a leaf then this should return an empty slice.
+    /// The value of the trie if it is a leaf. If the trie is not a leaf then this should return an
+    /// empty slice.
     fn value(&self) -> &'a [u8] {
         if !self.is_leaf() {
             return &[];
@@ -228,7 +217,8 @@ impl<'a> Trie<'a> {
         &self.0[2 + affix_length..]
     }
 
-    /// The branch hashes of the trie if it is a node. If the trie is not a node then this should return an empty slice.
+    /// The branch hashes of the trie if it is a node. If the trie is not a node then this should
+    /// return an empty slice.
     fn branches(&self) -> &'a [u8] {
         if self.is_leaf() {
             return &[];
@@ -297,56 +287,56 @@ impl<'a> Trie<'a> {
         Ok(TrieLeafOrBranch::Branch(digest))
     }
 
-    pub(crate) fn read_with_proof_using_search_key(
-        &self,
-        search_key: &[u8],
-        key_bytes_read: &mut u8,
-    ) -> Result<TrieReadWithProof<'a>, TrieReadError> {
-        // Determine what variant this trie is by reading the first byte for the code.
-        // - the 3 highest bits are the branch code
-        // - the 5 lowest bits are the branch count if the node has low radix
-        let tag_code = self.tag();
-        if tag_code == TrieTag::Leaf {
-            let key = self.key_or_affix();
-            // If the trie is a leaf but the key doesn't match our key, return NotFound
-            if key != search_key {
-                return Ok(TrieReadWithProof::NotFound);
-            }
-            return Ok(TrieReadWithProof::Leaf(Leaf(&self.0[1..])));
-        }
-
-        let affix = self.key_or_affix();
-
-        // If the affix is not prefix of the keys bytes remaining, then return NotFound
-        if search_key.len() <= *key_bytes_read as usize + affix.len()
-            || !affix
-                .iter()
-                .zip(&search_key[*key_bytes_read as usize..])
-                .all(|(affix_byte, key_byte)| affix_byte == key_byte)
-        {
-            return Ok(TrieReadWithProof::NotFound);
-        }
-
-        // Find the next key byte after the affix from the index in the trie
-        let key_byte_to_search_for = search_key[*key_bytes_read as usize + affix.len()];
-        let digest_idx = match self.find_branch_byte(&key_byte_to_search_for) {
-            None => return Ok(TrieReadWithProof::NotFound),
-            Some(digest_idx) => digest_idx as usize,
-        };
-        let branches = self.branches();
-        let digest =
-            branches[digest_idx * DIGEST_LENGTH..(digest_idx + 1) * DIGEST_LENGTH].try_into()?;
-
-        *key_bytes_read += affix.len() as u8 + 1;
-        Ok(TrieReadWithProof::BranchWithProof {
-            digest,
-            proof: Proof {
-                version_byte_and_envelope_hash: self.version_byte_and_envelope_hash().into(),
-                branches_before: &branches[..digest_idx * DIGEST_LENGTH],
-                branches_after: &branches[(digest_idx + 1) * DIGEST_LENGTH..],
-            },
-        })
-    }
+    // pub(crate) fn read_with_proof_using_search_key(
+    //     &self,
+    //     search_key: &[u8],
+    //     key_bytes_read: &mut u8,
+    // ) -> Result<TrieReadWithProof<'a>, TrieReadError> {
+    //     // Determine what variant this trie is by reading the first byte for the code.
+    //     // - the 3 highest bits are the branch code
+    //     // - the 5 lowest bits are the branch count if the node has low radix
+    //     let tag_code = self.tag();
+    //     if tag_code == TrieTag::Leaf {
+    //         let key = self.key_or_affix();
+    //         // If the trie is a leaf but the key doesn't match our key, return NotFound
+    //         if key != search_key {
+    //             return Ok(TrieReadWithProof::NotFound);
+    //         }
+    //         return Ok(TrieReadWithProof::Leaf(Leaf(&self.0[1..])));
+    //     }
+    //
+    //     let affix = self.key_or_affix();
+    //
+    //     // If the affix is not prefix of the keys bytes remaining, then return NotFound
+    //     if search_key.len() <= *key_bytes_read as usize + affix.len()
+    //         || !affix
+    //             .iter()
+    //             .zip(&search_key[*key_bytes_read as usize..])
+    //             .all(|(affix_byte, key_byte)| affix_byte == key_byte)
+    //     {
+    //         return Ok(TrieReadWithProof::NotFound);
+    //     }
+    //
+    //     // Find the next key byte after the affix from the index in the trie
+    //     let key_byte_to_search_for = search_key[*key_bytes_read as usize + affix.len()];
+    //     let digest_idx = match self.find_branch_byte(&key_byte_to_search_for) {
+    //         None => return Ok(TrieReadWithProof::NotFound),
+    //         Some(digest_idx) => digest_idx as usize,
+    //     };
+    //     let branches = self.branches();
+    //     let digest =
+    //         branches[digest_idx * DIGEST_LENGTH..(digest_idx + 1) * DIGEST_LENGTH].try_into()?;
+    //
+    //     *key_bytes_read += affix.len() as u8 + 1;
+    //     Ok(TrieReadWithProof::BranchWithProof {
+    //         digest,
+    //         proof: Proof {
+    //             version_byte_and_envelope_hash: self.version_byte_and_envelope_hash().into(),
+    //             branches_before: &branches[..digest_idx * DIGEST_LENGTH],
+    //             branches_after: &branches[(digest_idx + 1) * DIGEST_LENGTH..],
+    //         },
+    //     })
+    // }
 
     pub(crate) fn trie_hash(&self) -> Digest {
         let mut hasher = blake3::Hasher::new();

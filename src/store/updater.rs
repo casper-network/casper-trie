@@ -1,7 +1,6 @@
-use crate::store::{TransactionError, TrieTransactional, TrieWriter};
 use crate::{
-    store::TrieReader,
-    wire_trie::{TrieLeafOrBranch, TrieReadError, TrieTag, EMPTY_TRIE_ROOT},
+    store::{TransactionError, TrieReader, TrieTransactional, TrieWriter},
+    wire_trie::{TrieTag, EMPTY_TRIE_ROOT},
     Digest, Trie, DIGEST_LENGTH,
 };
 
@@ -19,14 +18,6 @@ impl OwnedTrie {
 
     pub(crate) fn trie_hash(&self) -> Digest {
         self.as_trie().trie_hash()
-    }
-
-    pub(crate) fn get_nth_digest(&self, n: u8) -> Result<TrieLeafOrBranch, TrieReadError> {
-        self.as_trie().get_nth_digest(n)
-    }
-
-    pub(crate) fn version_byte_and_envelope_hash(&self) -> blake3::Hash {
-        self.as_trie().version_byte_and_envelope_hash()
     }
 }
 
@@ -637,9 +628,19 @@ mod tests {
             backends::in_memory::InMemoryStore,
             updater::{Node, NodeMustBeFlatError, OwnedLeaf, OwnedTrie, Updater, UpdatingTrie},
         },
-        wire_trie::{TrieLeafOrBranch, EMPTY_TRIE_ROOT},
+        wire_trie::{TrieLeafOrBranch, TrieReadError, EMPTY_TRIE_ROOT},
         Digest,
     };
+
+    impl OwnedTrie {
+        pub(crate) fn get_nth_digest(&self, n: u8) -> Result<TrieLeafOrBranch, TrieReadError> {
+            self.as_trie().get_nth_digest(n)
+        }
+
+        pub(crate) fn version_byte_and_envelope_hash(&self) -> blake3::Hash {
+            self.as_trie().version_byte_and_envelope_hash()
+        }
+    }
 
     fn node_with_n_branches(branch_count: u8, offset: u8, spacing: u8) -> Node {
         let mut node = Node::new_empty(vec![0, 1, 2]);

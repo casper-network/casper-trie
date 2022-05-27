@@ -5,9 +5,10 @@ pub mod backends;
 pub mod updater;
 
 pub use crate::store::backends::in_memory::InMemoryStore;
-use crate::wire_trie::BranchIterator;
 use crate::{
-    wire_trie::{Leaf, Trie, TrieLeafOrBranch, TrieReadError, TrieTag, EMPTY_TRIE_ROOT},
+    wire_trie::{
+        BranchIterator, Leaf, Trie, TrieLeafOrBranch, TrieReadError, TrieTag, EMPTY_TRIE_ROOT,
+    },
     Digest,
 };
 
