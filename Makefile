@@ -5,7 +5,7 @@ all: check
 check:
 	cargo +nightly fmt --check
 	cargo audit --deny warnings
-	cargo clippy
+	cargo clippy -- -D warnings
 	cargo test
 	cargo bench
 
