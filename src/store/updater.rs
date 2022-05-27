@@ -528,7 +528,7 @@ impl<'a, S> Updater<'a, S> {
             let current_state = std::mem::replace(&mut current_state, UpdatingTrie::Empty);
             let starting_node = match current_state {
                 UpdatingTrie::Empty => {
-                    return Ok([0; 32]);
+                    return Ok(EMPTY_TRIE_ROOT);
                 }
                 UpdatingTrie::Digest(digest) => {
                     return Ok(*digest);
